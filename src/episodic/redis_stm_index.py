@@ -3,28 +3,28 @@ from redis_client import get_redis
 
 r = get_redis()
 
-INDEX = "stm_idx"
+INDEX = "episodic_stm_idx"
 DIM = 384
 
 def create_index():
     """
-    Create Redis search index for STM using RediSearch.
+    Create Redis search index for Episodic STM using RediSearch.
     Note: Requires Redis Stack or RediSearch module.
     """
     try:
         # Check if index exists
         r.execute_command("FT.INFO", INDEX)
-        print("✅ STM index exists")
+        print("✅ Episodic STM index exists")
         return
     except Exception:
         pass
 
     try:
-        # Create index with vector field
+        # Create index with vector field for episodic namespace
         r.execute_command(
             "FT.CREATE", INDEX,
             "ON", "HASH",
-            "PREFIX", "1", "stm:",
+            "PREFIX", "1", "episodic:stm:",
             "SCHEMA",
             "query_vector", "VECTOR", "HNSW", "6",
             "TYPE", "FLOAT32",
@@ -32,7 +32,7 @@ def create_index():
             "DISTANCE_METRIC", "COSINE",
             "created_at", "NUMERIC", "SORTABLE"
         )
-        print("🚀 STM index created")
+        print("🚀 Episodic STM index created")
     except Exception as e:
         print(f"⚠️  Could not create Redis search index: {e}")
         print("   Redis Stack or RediSearch module required for vector search")

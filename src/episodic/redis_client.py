@@ -1,28 +1,38 @@
 # redis_client.py
+"""
+Redis client for Episodic Memory using unified Redis instance
+Data is namespaced with 'episodic:' prefix
+"""
 import os
-from redis import Redis
-from dotenv import load_dotenv
+import sys
 
-load_dotenv()
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def get_redis():
-    """Get Redis connection with proper configuration"""
-    host = os.getenv("REDIS_HOST", "localhost")
-    port = os.getenv("REDIS_PORT", "6379")
-    password = os.getenv("REDIS_PASSWORD", "")
-
-    if not host or not port:
-        raise RuntimeError("❌ Missing Redis env vars (REDIS_HOST, REDIS_PORT)")
-
-    # Only include password if it's not empty
-    kwargs = {
-        "host": host,
-        "port": int(port),
-        "decode_responses": False  # REQUIRED for binary vectors
-    }
+try:
+    from services.redis_common_client import get_redis
+except ImportError:
+    # Fallback for direct imports
+    from redis import Redis
+    from dotenv import load_dotenv
+    load_dotenv()
     
-    if password:
-        kwargs["username"] = "default"
-        kwargs["password"] = password
+    def get_redis():
+        """Fallback Redis connection"""
+        host = os.getenv("REDIS_HOST", "localhost")
+        port = os.getenv("REDIS_PORT", "6379")
+        password = os.getenv("REDIS_PASSWORD", "")
+        db = os.getenv("REDIS_DB", "0")
+        
+        kwargs = {
+            "host": host,
+            "port": int(port),
+            "db": int(db),
+            "decode_responses": False
+        }
+        
+        if password:
+            kwargs["password"] = password
+        
+        return Redis(**kwargs)
 
-    return Redis(**kwargs)

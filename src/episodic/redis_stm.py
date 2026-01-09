@@ -7,7 +7,7 @@ from redis_client import get_redis
 embedder = EmbeddingModel()
 r = get_redis()
 
-INDEX = "stm_idx"
+INDEX = "episodic_stm_idx"
 TTL = 300  # 5 minutes
 MAX_ITEMS = 5
 SIM_THRESHOLD = 0.90
@@ -15,16 +15,16 @@ SIM_THRESHOLD = 0.90
 
 def _prune(user_id):
     """Keep only MAX_ITEMS most recent entries"""
-    keys = sorted(r.keys(f"stm:{user_id}:*"))
+    keys = sorted(r.keys(f"episodic:stm:{user_id}:*"))
     for k in keys[:-MAX_ITEMS]:
         r.delete(k)
 
 
 def store_stm(user_id, query, context):
-    """Store query and context in Redis STM cache"""
+    """Store query and context in Redis STM cache with episodic namespace"""
     qvec = embedder.encode(query).astype(np.float32).tobytes()
 
-    key = f"stm:{user_id}:{int(time.time())}"
+    key = f"episodic:stm:{user_id}:{int(time.time())}"
 
     r.hset(key, mapping={
         "query": query,
@@ -35,7 +35,7 @@ def store_stm(user_id, query, context):
 
     r.expire(key, TTL)
     _prune(user_id)
-    print(f"💾 Stored STM: {key}")
+    print(f"💾 Stored Episodic STM: {key}")
 
 
 def search_stm(user_id, query, k=3):
@@ -78,7 +78,7 @@ def search_stm(user_id, query, k=3):
         if similarity < SIM_THRESHOLD:
             return None
 
-        print(f"⚡ STM HIT similarity={round(similarity, 3)}")
+        print(f"⚡ Episodic STM HIT similarity={round(similarity, 3)}")
 
         return [{
             "role": "system",
@@ -88,7 +88,7 @@ def search_stm(user_id, query, k=3):
     except Exception as e:
         # Fallback: simple key-based lookup
         print(f"⚠️  Vector search unavailable, using fallback: {e}")
-        keys = r.keys(f"stm:{user_id}:*")
+        keys = r.keys(f"episodic:stm:{user_id}:*")
         if keys:
             # Get most recent entry
             latest = sorted(keys)[-1]
@@ -96,9 +96,10 @@ def search_stm(user_id, query, k=3):
             if stored_query and query.lower() in stored_query.decode('utf-8').lower():
                 context = r.hget(latest, "context")
                 if context:
-                    print("⚡ STM HIT (fallback match)")
+                    print("⚡ Episodic STM HIT (fallback match)")
                     return [{
                         "role": "system",
                         "content": context.decode('utf-8')
                     }]
         return None
+
