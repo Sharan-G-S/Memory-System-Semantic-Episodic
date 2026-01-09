@@ -1,6 +1,6 @@
 # 🧠 Interactive Memory System
 
-A dual-layer semantic + episodic memory system with intelligent AI-powered Q&A capabilities.
+A dual-layer semantic + episodic memory system with **Redis-like temporary cache** and intelligent AI-powered Q&A capabilities.
 
 ## 🚀 Quick Start
 
@@ -18,13 +18,19 @@ python3 interactive_memory_app.py
 
 ## 📋 Features
 
+✅ **Temporary Memory Cache (NEW!)**
+- **Redis-like in-memory cache** for last 15 chats
+- **4-8x faster** response times for recent messages
+- Automatic management and user switching support
+- See [TEMPORARY_MEMORY_CACHE.md](docs/TEMPORARY_MEMORY_CACHE.md) for details
+
 ✅ **Dual-Layer Memory Architecture**
 - **Semantic Layer**: Long-term facts (user personas, knowledge base)
 - **Episodic Layer**: Temporal events (conversations, episodes)
 
 ✅ **Intelligent Storage & Retrieval**
 - Auto-classify and store information in appropriate layers
-- Hybrid search across all memory types
+- Hybrid search across all memory types + temporary cache
 - Context-aware AI responses using Groq API
 
 ✅ **Conversation History**
@@ -34,7 +40,7 @@ python3 interactive_memory_app.py
 
 ✅ **Multi-User Support**
 - 5 pre-populated users with ~240 entries each
-- Switch between users seamlessly
+- Switch between users seamlessly (auto-reloads cache)
 - Isolated memory per user
 
 ## 💡 Commands
@@ -42,11 +48,11 @@ python3 interactive_memory_app.py
 | Command | Description |
 |---------|-------------|
 | `<text>` | Auto-store statement in appropriate layers |
-| `search <query>` | Hybrid search across all memory layers |
-| `chat <message>` | Chat with AI using full context |
+| `search <query>` | Hybrid search across all layers + temp cache |
+| `chat <message>` | Chat with AI using full context (prioritizes temp cache) |
 | `history` | View conversation history with timestamps |
 | `status` | Show detailed memory statistics |
-| `user <id>` | Switch to different user |
+| `user <id>` | Switch to different user (reloads temp cache) |
 | `quit` | Exit application |
 
 ## 📊 Example Usage

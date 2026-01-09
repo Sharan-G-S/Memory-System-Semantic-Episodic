@@ -5,6 +5,7 @@ Enhanced Interactive Memory System
 - Shows WHERE data comes FROM during retrieval
 - Hybrid search across all memory types
 - Real-time storage indicators
+- Redis-based temporary memory cache (last 15 chats) for fast access
 """
 import os
 import sys
@@ -12,6 +13,7 @@ import hashlib
 import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+import redis
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
@@ -26,16 +28,20 @@ except ImportError:
 
 
 class InteractiveMemorySystem:
-    """Enhanced memory system with layer visibility"""
+    """Enhanced memory system with layer visibility and Redis-based temporary memory cache"""
     
     def __init__(self):
         self.conn = None
         self.user_id = "default_user"
         self.groq_client = None
         self.current_chat_id = None
+        # Redis connection for temporary memory cache
+        self.redis_client = None
         self.connect_db()
+        self.connect_redis()
         self.setup_groq()
         self.ensure_super_chat()
+        self.load_recent_to_temp_memory()
     
     def connect_db(self):
         """Connect to PostgreSQL database"""
@@ -52,6 +58,29 @@ class InteractiveMemorySystem:
         except Exception as e:
             print(f"❌ Database connection failed: {e}")
             sys.exit(1)
+    
+    def connect_redis(self):
+        """Connect to Redis for temporary memory cache"""
+        try:
+            redis_host = os.getenv('REDIS_HOST', 'localhost')
+            redis_port = int(os.getenv('REDIS_PORT', 6379))
+            redis_db = int(os.getenv('REDIS_DB', 0))
+            
+            self.redis_client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                decode_responses=True  # Return strings instead of bytes
+            )
+            # Test connection
+            self.redis_client.ping()
+            print("✓ Redis connected")
+        except redis.ConnectionError:
+            print("⚠️  Redis not available - temporary cache disabled")
+            self.redis_client = None
+        except Exception as e:
+            print(f"⚠️  Redis connection error: {e}")
+            self.redis_client = None
     
     def setup_groq(self):
         """Setup Groq API client"""
@@ -86,6 +115,61 @@ class InteractiveMemorySystem:
             self.conn.commit()
         
         cur.close()
+    
+    def get_redis_key(self, key_suffix: str) -> str:
+        """Generate Redis key with user prefix"""
+        return f"temp_memory:{self.user_id}:{key_suffix}"
+    
+    def load_recent_to_temp_memory(self):
+        """Load last 15 messages into Redis temporary memory cache"""
+        if not self.redis_client:
+            return
+        
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT scm.role, scm.content, scm.created_at
+            FROM super_chat_messages scm
+            JOIN super_chat sc ON scm.super_chat_id = sc.id
+            WHERE sc.user_id = %s
+            ORDER BY scm.created_at DESC
+            LIMIT 15
+        """, (self.user_id,))
+        
+        messages = cur.fetchall()
+        cur.close()
+        
+        # Clear existing cache for this user
+        cache_key = self.get_redis_key("messages")
+        self.redis_client.delete(cache_key)
+        
+        # Add to Redis list (LPUSH for most recent first, then reverse)
+        for msg in reversed(messages):
+            msg_data = json.dumps({
+                'role': msg['role'],
+                'content': msg['content'],
+                'created_at': msg['created_at'].isoformat(),
+                'source': 'TEMP_MEMORY'
+            })
+            self.redis_client.rpush(cache_key, msg_data)
+        
+        # Set TTL to 24 hours (optional)
+        self.redis_client.expire(cache_key, 86400)
+    
+    def get_temp_memory(self) -> List[Dict]:
+        """Retrieve temporary memory from Redis"""
+        if not self.redis_client:
+            return []
+        
+        cache_key = self.get_redis_key("messages")
+        messages = self.redis_client.lrange(cache_key, 0, -1)
+        
+        result = []
+        for msg_data in messages:
+            msg = json.loads(msg_data)
+            msg['created_at'] = datetime.fromisoformat(msg['created_at'])
+            result.append(msg)
+        
+        return result
     
     def get_user_name(self):
         """Get user's name from persona"""
@@ -304,25 +388,64 @@ class InteractiveMemorySystem:
         }
     
     def add_chat_message(self, role: str, content: str):
-        """Add message to episodic memory"""
+        """Add message to episodic memory and Redis temporary cache"""
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO super_chat_messages 
             (super_chat_id, role, content)
             VALUES (%s, %s, %s)
+            RETURNING created_at
         """, (self.current_chat_id, role, content))
+        
+        created_at = cur.fetchone()['created_at']
         self.conn.commit()
         cur.close()
+        
+        # Add to Redis temporary memory cache
+        if self.redis_client:
+            cache_key = self.get_redis_key("messages")
+            msg_data = json.dumps({
+                'role': role,
+                'content': content,
+                'created_at': created_at.isoformat(),
+                'source': 'TEMP_MEMORY'
+            })
+            
+            # Add to end of list
+            self.redis_client.rpush(cache_key, msg_data)
+            
+            # Keep only last 15 messages
+            self.redis_client.ltrim(cache_key, -15, -1)
+            
+            # Refresh TTL
+            self.redis_client.expire(cache_key, 86400)
     
     # ========================================================================
-    # HYBRID SEARCH WITH SOURCE INDICATORS
+    # HYBRID SEARCH WITH SOURCE INDICATORS + REDIS TEMPORARY MEMORY
     # ========================================================================
     
     def hybrid_search(self, query: str, limit: int = 5) -> Dict[str, List]:
-        """Hybrid search across all memory layers"""
+        """Hybrid search across all memory layers including Redis temporary memory"""
         cur = self.conn.cursor()
         
-        print(f"\n🔍 Searching with HYBRID approach across all layers...")
+        print(f"\n🔍 Searching with HYBRID approach + Redis cache across all layers...")
+        
+        # 1. Search REDIS TEMPORARY MEMORY FIRST (fastest, most recent)
+        temp_results = []
+        query_lower = query.lower()
+        
+        if self.redis_client:
+            temp_messages = self.get_temp_memory()
+            for msg in temp_messages:
+                if query_lower in msg['content'].lower():
+                    temp_results.append({
+                        'source_layer': 'TEMP_MEMORY',
+                        'table_name': 'redis_cache',
+                        'role': msg['role'],
+                        'content': msg['content'],
+                        'created_at': msg['created_at']
+                    })
+        
         
         # 1. Search Semantic Memory - Knowledge Base (text search)
         cur.execute("""
@@ -398,6 +521,7 @@ class InteractiveMemorySystem:
         cur.close()
         
         return {
+            "temp_memory": temp_results,  # Most recent, fastest access
             "semantic_knowledge": [dict(r) for r in semantic_knowledge],
             "semantic_persona": [dict(r) for r in semantic_persona],
             "episodic_messages": [dict(r) for r in episodic_messages],
@@ -405,12 +529,21 @@ class InteractiveMemorySystem:
         }
     
     def display_search_results(self, results: Dict[str, List]):
-        """Display search results with layer indicators"""
+        """Display search results with layer indicators including temporary memory"""
         total = sum(len(v) for v in results.values())
         
         print(f"\n{'='*70}")
         print(f"  SEARCH RESULTS: {total} items found | USER: {self.user_id}")
         print(f"{'='*70}\n")
+        
+        # Temporary Memory (PRIORITY - Most Recent)
+        if results.get('temp_memory'):
+            print(f"⚡ TEMPORARY MEMORY → cache ({len(results['temp_memory'])} results)")
+            for item in results['temp_memory']:
+                print(f"   Role: {item['role']}")
+                print(f"   Content: {item['content'][:100]}...")
+                print(f"   Time: {item['created_at']}")
+                print()
         
         # Semantic Knowledge
         if results['semantic_knowledge']:
@@ -457,20 +590,22 @@ class InteractiveMemorySystem:
     # ========================================================================
     
     def run(self):
-        """Enhanced interactive CLI"""
+        """Enhanced interactive CLI with Redis temporary memory cache"""
         print("\n" + "="*70)
         print("🧠 INTERACTIVE MEMORY SYSTEM - Layer-Aware Storage & Retrieval")
         print("="*70)
         print("\n📊 Memory Architecture:")
-        print("  SEMANTIC LAYER:  user_persona, knowledge_base (long-term facts)")
-        print("  EPISODIC LAYER:  super_chat_messages, episodes (temporal events)")
+        redis_status = "Redis connected ✓" if self.redis_client else "Redis unavailable ⚠️"
+        print(f"  ⚡ TEMPORARY CACHE: Last 15 chats ({redis_status})")
+        print("  📚 SEMANTIC LAYER:  user_persona, knowledge_base (long-term facts)")
+        print("  📅 EPISODIC LAYER:  super_chat_messages, episodes (temporal events)")
         print("\n💡 Commands:")
         print("  <text>              → Auto-store in appropriate layer(s)")
-        print("  search <query>      → Hybrid search across ALL layers")
-        print("  chat <message>      → Chat with AI (full context)")
+        print("  search <query>      → Hybrid search across ALL layers + temp cache")
+        print("  chat <message>      → Chat with AI (prioritizes temp cache)")
         print("  history             → View conversation history with timestamps")
         print("  status              → Show memory statistics")
-        print("  user <id>           → Switch user")
+        print("  user <id>           → Switch user (reloads temp cache)")
         print("  quit                → Exit")
         print("="*70 + "\n")
         
@@ -512,7 +647,13 @@ class InteractiveMemorySystem:
                 elif user_input.startswith("user "):
                     self.user_id = user_input[5:].strip()
                     self.ensure_super_chat()
-                    print(f"\n✓ Switched to user: {self.user_id}\n")
+                    # Reload Redis temporary memory for new user
+                    self.load_recent_to_temp_memory()
+                    
+                    cache_size = len(self.get_temp_memory()) if self.redis_client else 0
+                    print(f"\n✓ Switched to user: {self.user_id}")
+                    if self.redis_client:
+                        print(f"⚡ Loaded {cache_size} messages into Redis cache\n")
                     self.show_compact_status()
                 
                 elif user_input.startswith("chat "):
@@ -702,10 +843,20 @@ class InteractiveMemorySystem:
         
         # Check if asking about specific time/conversation
         import re
+        from datetime import datetime, timedelta
+        
         time_patterns = [
             r'(\d{1,2}:\d{2}\s*(?:am|pm))',  # 7:40pm, 7:40 pm
             r'at\s+(\d{1,2}:\d{2})',  # at 19:40
             r'conversation.*?(\d{1,2}:\d{2})',  # conversation at 7:40
+        ]
+        
+        # Check for date patterns
+        date_patterns = [
+            (r'(?:Jan|January)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})', 'jan_year'),  # Jan 7th 2026, January 7, 2026
+            (r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:Jan|January)\s+(\d{4})', 'day_jan_year'),  # 7th Jan 2026
+            (r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})', 'numeric'),  # 01/07/2026, 1-7-2026
+            (r'(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:Jan|January)', 'day_jan'),  # 7th Jan (no year)
         ]
         
         time_match = None
@@ -715,12 +866,57 @@ class InteractiveMemorySystem:
                 time_match = match.group(1)
                 break
         
+        # Parse date from query
+        target_date = None
+        if 'yesterday' in message.lower():
+            target_date = (datetime.now() - timedelta(days=1)).date()
+            print(f"   📅 Detected: yesterday → {target_date}")
+        else:
+            for pattern, pattern_type in date_patterns:
+                match = re.search(pattern, message.lower(), re.IGNORECASE)
+                if match:
+                    try:
+                        if pattern_type == 'jan_year':
+                            day = int(match.group(1))
+                            year = int(match.group(2))
+                            target_date = datetime(year, 1, day).date()
+                            print(f"   📅 Detected date: {target_date.strftime('%B %d, %Y')} (pattern: jan_year)")
+                        elif pattern_type == 'day_jan_year':
+                            day = int(match.group(1))
+                            year = int(match.group(2))
+                            target_date = datetime(year, 1, day).date()
+                            print(f"   📅 Detected date: {target_date.strftime('%B %d, %Y')} (pattern: day_jan_year)")
+                        elif pattern_type == 'day_jan':
+                            day = int(match.group(1))
+                            year = datetime.now().year
+                            target_date = datetime(year, 1, day).date()
+                            print(f"   📅 Detected date: {target_date.strftime('%B %d, %Y')} (pattern: day_jan)")
+                        elif pattern_type == 'numeric':
+                            day = int(match.group(2))
+                            month = int(match.group(1))
+                            year = int(match.group(3))
+                            target_date = datetime(year, month, day).date()
+                            print(f"   📅 Detected date: {target_date.strftime('%B %d, %Y')} (pattern: numeric)")
+                        break
+                    except Exception as e:
+                        print(f"   ⚠️  Date parsing error for pattern {pattern_type}: {e}")
+                        continue
+        
         # Get context via hybrid search
         print(f"   🔍 Searching across all memory layers...")
         results = self.hybrid_search(message, limit=10)
         
         # Build comprehensive context
         context_parts = []
+        
+        # PRIORITY: Add Redis temporary memory first (last 15 chats - most recent context)
+        if self.redis_client:
+            temp_messages = self.get_temp_memory()
+            if temp_messages:
+                context_parts.append("\n⚡ RECENT REDIS CACHE (Last 15 chats):")
+                for msg in temp_messages:
+                    timestamp = msg['created_at'].strftime('%b %d, %Y %I:%M %p') if msg.get('created_at') else 'Unknown time'
+                    context_parts.append(f"- [{timestamp}] {msg['role']}: {msg['content']}")
         
         # Get user persona
         cur = self.conn.cursor()
@@ -732,7 +928,7 @@ class InteractiveMemorySystem:
         persona = cur.fetchone()
         
         if persona:
-            context_parts.append(f"USER INFO: {persona['name']} - {persona['raw_content']}")
+            context_parts.append(f"\nUSER INFO: {persona['name']} - {persona['raw_content']}")
             if persona['interests']:
                 context_parts.append(f"Interests: {', '.join(persona['interests'])}")
             if persona['expertise_areas']:
@@ -744,31 +940,40 @@ class InteractiveMemorySystem:
             for item in results['semantic_knowledge'][:3]:
                 context_parts.append(f"- {item['content']}")
         
-        # Add relevant messages WITH TIMESTAMPS
+        # Add relevant messages WITH TIMESTAMPS (only if not already in temp_memory)
         if results['episodic_messages']:
-            context_parts.append("\nRECENT CONVERSATIONS:")
+            context_parts.append("\nRECENT CONVERSATIONS (from history):")
             for item in results['episodic_messages'][:10]:
                 timestamp = item['created_at'].strftime('%b %d, %Y %I:%M %p') if item['created_at'] else 'Unknown time'
                 context_parts.append(f"- [{timestamp}] {item['role']}: {item['content'][:100]}")
         
         # If asking about specific time, get messages from that time
-        if time_match:
+        if time_match or target_date:
+            query_date = target_date if target_date else datetime.now().date()
+            
+            print(f"   🔍 Querying messages for date: {query_date}")
+            
             cur.execute("""
                 SELECT scm.role, scm.content, scm.created_at
                 FROM super_chat_messages scm
                 JOIN super_chat sc ON scm.super_chat_id = sc.id
                 WHERE sc.user_id = %s
-                  AND scm.created_at::date = CURRENT_DATE
+                  AND scm.created_at::date = %s
                 ORDER BY scm.created_at DESC
-                LIMIT 50
-            """, (self.user_id,))
+                LIMIT 100
+            """, (self.user_id, query_date))
             recent_messages = cur.fetchall()
             
+            print(f"   ✅ Found {len(recent_messages)} messages for {query_date.strftime('%B %d, %Y')}")
+            
             if recent_messages:
-                context_parts.append(f"\nTODAY'S FULL CONVERSATION HISTORY:")
+                date_str = query_date.strftime('%B %d, %Y')
+                context_parts.append(f"\nFULL CONVERSATION HISTORY FOR {date_str}:")
                 for msg in recent_messages:
                     timestamp = msg['created_at'].strftime('%I:%M %p') if msg['created_at'] else 'Unknown'
                     context_parts.append(f"- [{timestamp}] {msg['role']}: {msg['content']}")
+            else:
+                context_parts.append(f"\nNo conversations found for {query_date.strftime('%B %d, %Y')}")
         
         # Add episodes
         if results['episodic_episodes']:
