@@ -5,7 +5,7 @@ Enhanced Interactive Memory System
 - Shows WHERE data comes FROM during retrieval
 - Hybrid search across all memory types
 - Real-time storage indicators
-- Redis-based temporary memory cache (last 15 chats) for fast access
+- Redis-based temporary memory cache (last 15 user messages - context only) for fast access
 """
 import os
 import sys
@@ -28,7 +28,7 @@ except ImportError:
 
 
 class InteractiveMemorySystem:
-    """Enhanced memory system with layer visibility and Redis-based temporary memory cache"""
+    """Enhanced memory system with layer visibility and Redis-based temporary memory cache (user context only)"""
     
     def __init__(self):
         self.conn = None
@@ -126,7 +126,7 @@ class InteractiveMemorySystem:
         return f"temp_memory:{self.user_id}:{key_suffix}"
     
     def load_recent_to_temp_memory(self):
-        """Load last 15 messages into Redis temporary memory cache"""
+        """Load last 15 USER messages (context only) into Redis temporary memory cache"""
         if not self.redis_client:
             return
         
@@ -135,7 +135,7 @@ class InteractiveMemorySystem:
             SELECT scm.role, scm.content, scm.created_at
             FROM super_chat_messages scm
             JOIN super_chat sc ON scm.super_chat_id = sc.id
-            WHERE sc.user_id = %s
+            WHERE sc.user_id = %s AND scm.role = 'user'
             ORDER BY scm.created_at DESC
             LIMIT 15
         """, (self.user_id,))
@@ -393,7 +393,7 @@ class InteractiveMemorySystem:
         }
     
     def add_chat_message(self, role: str, content: str):
-        """Add message to episodic memory and Redis temporary cache"""
+        """Add message to episodic memory and Redis temporary cache (USER messages only)"""
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO super_chat_messages 
@@ -406,8 +406,8 @@ class InteractiveMemorySystem:
         self.conn.commit()
         cur.close()
         
-        # Add to Redis temporary memory cache
-        if self.redis_client:
+        # Add to Redis temporary memory cache - ONLY USER MESSAGES (context)
+        if self.redis_client and role == 'user':
             cache_key = self.get_redis_key("messages")
             msg_data = json.dumps({
                 'role': role,
@@ -419,7 +419,7 @@ class InteractiveMemorySystem:
             # Add to end of list
             self.redis_client.rpush(cache_key, msg_data)
             
-            # Keep only last 15 messages
+            # Keep only last 15 user messages
             self.redis_client.ltrim(cache_key, -15, -1)
             
             # Refresh TTL
@@ -601,7 +601,7 @@ class InteractiveMemorySystem:
         print("="*70)
         print("\n📊 Memory Architecture:")
         redis_status = "Redis connected ✓" if self.redis_client else "Redis unavailable ⚠️"
-        print(f"  ⚡ TEMPORARY CACHE: Last 15 chats ({redis_status})")
+        print(f"  ⚡ TEMPORARY CACHE: Last 15 user messages (context only) ({redis_status})")
         print("  📚 SEMANTIC LAYER:  user_persona, knowledge_base (long-term facts)")
         print("  📅 EPISODIC LAYER:  super_chat_messages, episodes (temporal events)")
         print("\n💡 Commands:")
@@ -914,14 +914,14 @@ class InteractiveMemorySystem:
         # Build comprehensive context
         context_parts = []
         
-        # PRIORITY: Add Redis temporary memory first (last 15 chats - most recent context)
+        # PRIORITY: Add Redis temporary memory first (last 15 USER messages - context only)
         if self.redis_client:
             temp_messages = self.get_temp_memory()
             if temp_messages:
-                context_parts.append("\n⚡ RECENT REDIS CACHE (Last 15 chats):")
+                context_parts.append("\n⚡ RECENT USER CONTEXT (Last 15 user messages from Redis):")
                 for msg in temp_messages:
                     timestamp = msg['created_at'].strftime('%b %d, %Y %I:%M %p') if msg.get('created_at') else 'Unknown time'
-                    context_parts.append(f"- [{timestamp}] {msg['role']}: {msg['content']}")
+                    context_parts.append(f"- [{timestamp}] USER: {msg['content']}")
         
         # Get user persona
         cur = self.conn.cursor()
