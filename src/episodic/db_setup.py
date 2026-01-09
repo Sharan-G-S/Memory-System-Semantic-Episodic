@@ -1,15 +1,17 @@
 from db import get_conn
-import numpy as np
 from embeddings import EmbeddingModel
 
 embedder = EmbeddingModel()
+
 
 def create_tables():
     with get_conn() as conn, conn.cursor() as cur:
         # Enable pgvector extension
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
+        # --------------------
         # Super Chat
+        # --------------------
         cur.execute("""
             CREATE TABLE IF NOT EXISTS super_chat (
                 id SERIAL PRIMARY KEY,
@@ -30,7 +32,9 @@ def create_tables():
             )
         """)
 
+        # --------------------
         # Deep Dive
+        # --------------------
         cur.execute("""
             CREATE TABLE IF NOT EXISTS deepdive_conversations (
                 id SERIAL PRIMARY KEY,
@@ -51,7 +55,9 @@ def create_tables():
             )
         """)
 
+        # --------------------
         # Episodes
+        # --------------------
         cur.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 id SERIAL PRIMARY KEY,
@@ -63,12 +69,14 @@ def create_tables():
                 message_count INTEGER NOT NULL,
                 date_from TIMESTAMP NOT NULL,
                 date_to TIMESTAMP NOT NULL,
-                vector vector(384),  -- for all-MiniLM-L6-v2
+                vector vector(384),  -- all-MiniLM-L6-v2
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
 
+        # --------------------
         # Instances (archived episodes)
+        # --------------------
         cur.execute("""
             CREATE TABLE IF NOT EXISTS instances (
                 id SERIAL PRIMARY KEY,
@@ -85,45 +93,89 @@ def create_tables():
             )
         """)
 
+        # --------------------
+        # Vector index (CRITICAL for scale)
+        # --------------------
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_episodes_vector
+            ON episodes USING ivfflat (vector vector_cosine_ops)
+            WITH (lists = 100);
+        """)
+
         conn.commit()
 
-        # Alter existing tables to TEXT if needed (for migration)
+        # --------------------
+        # Migration safety (ignore if already correct)
+        # --------------------
         try:
             cur.execute("ALTER TABLE super_chat ALTER COLUMN user_id TYPE TEXT")
-        except:
+        except Exception:
             pass
+
         try:
             cur.execute("ALTER TABLE deepdive_conversations ALTER COLUMN user_id TYPE TEXT")
             cur.execute("ALTER TABLE deepdive_conversations ALTER COLUMN tenant_id TYPE TEXT")
-        except:
+        except Exception:
             pass
+
         try:
             cur.execute("ALTER TABLE episodes ALTER COLUMN user_id TYPE TEXT")
             cur.execute("ALTER TABLE episodes ALTER COLUMN tenant_id TYPE TEXT")
-        except:
+        except Exception:
             pass
+
         try:
             cur.execute("ALTER TABLE instances ALTER COLUMN user_id TYPE TEXT")
             cur.execute("ALTER TABLE instances ALTER COLUMN tenant_id TYPE TEXT")
-        except:
+        except Exception:
             pass
 
         conn.commit()
-    print("Tables created successfully.")
 
-    # Populate vectors for existing episodes
+    print("✅ Tables and indexes created successfully.")
+
+    # Backfill vectors for existing episodes
     populate_vectors()
+
 
 def populate_vectors():
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, messages FROM episodes WHERE vector IS NULL")
+        cur.execute("""
+            SELECT id, messages
+            FROM episodes
+            WHERE vector IS NULL
+        """)
         episodes = cur.fetchall()
+
+        updated = 0
         for ep in episodes:
-            text = " ".join(m["content"] for m in ep["messages"])
+            messages = ep.get("messages")
+
+            # Safety check
+            if not messages or not isinstance(messages, list):
+                continue
+
+            text = " ".join(
+                m.get("content", "")
+                for m in messages
+                if isinstance(m, dict) and m.get("content")
+            ).strip()
+
+            if not text:
+                continue
+
             vec = embedder.encode(text)
-            cur.execute("UPDATE episodes SET vector = %s WHERE id = %s", (vec.tolist(), ep["id"]))
+
+            cur.execute(
+                "UPDATE episodes SET vector = %s WHERE id = %s",
+                (vec.tolist(), ep["id"])
+            )
+            updated += 1
+
         conn.commit()
-    print(f"Populated vectors for {len(episodes)} episodes.")
+
+    print(f"🧠 Populated vectors for {updated} episodes.")
+
 
 if __name__ == "__main__":
     create_tables()

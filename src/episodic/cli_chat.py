@@ -34,7 +34,7 @@ def run_cli():
                 date_to = ep.get('date_to', 'N/A')
                 print(f"Date Range  : {date_from} → {date_to}")
                 print(f"Vector Score: {meta.get('vector_score', 0):.4f}")
-                print(f"BM25 Score  : {meta.get('bm25_score', 0):.4f}")
+                print(f"BM25 Score  : {meta.get('bm25_score', 0):.8f}")
                 print()
                 print("PAST CONTEXT:")
                 messages = ep.get('messages', [])
