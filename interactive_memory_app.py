@@ -1249,6 +1249,12 @@ if __name__ == "__main__":
     print(f"\n🚀 Starting Interactive Memory System")
     print(f"   Context Optimization: ENABLED (Balanced Profile)")
     print(f"   • 30-50% token reduction for efficiency and quality")
+    print(f"\n   Optimization Techniques:")
+    print(f"   1. Deduplication - Remove exact & similar duplicates")
+    print(f"   2. Entropy Filtering - Remove low-information content")
+    print(f"   3. Compression - Consolidate redundant information")
+    print(f"   4. Re-ranking - Verify relevance with iterations")
+    print(f"   5. Token Limiting - Enforce context window limits")
     print()
     
     app = InteractiveMemorySystem()
