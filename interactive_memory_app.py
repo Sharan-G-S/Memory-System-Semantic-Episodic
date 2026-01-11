@@ -20,10 +20,18 @@ from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
 # Add src to path for optimization imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+src_path = os.path.join(script_dir, 'src')
+if os.path.exists(src_path) and src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
-from services.context_optimizer import ContextOptimizer, SummarizationOptimizer
-from config.optimization_config import get_optimization_profile, get_config_for_model
+try:
+    from services.context_optimizer import ContextOptimizer, SummarizationOptimizer
+    from config.optimization_config import get_optimization_profile, get_config_for_model
+    OPTIMIZER_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    OPTIMIZER_AVAILABLE = False
+    print(f"⚠️  Context optimizer not available - optimization features disabled ({e})")
 
 load_dotenv()
 
@@ -44,20 +52,24 @@ class InteractiveMemorySystem:
         self.current_chat_id = None
         # Redis connection for temporary memory cache
         self.redis_client = None
-        # Context optimization - always enabled with balanced profile
-        self.enable_optimization = True
+        # Context optimization - enabled if available
+        self.enable_optimization = OPTIMIZER_AVAILABLE
         self.optimization_profile = "balanced"
         
-        # Initialize optimizers with balanced profile
-        opt_config = get_optimization_profile("balanced")
-        
-        # Remove compression_ratio from optimizer config (it's for summarizer only)
-        summarization_ratio = opt_config.pop('compression_ratio', 0.3)
-        
-        self.context_optimizer = ContextOptimizer(**opt_config)
-        self.summarization_optimizer = SummarizationOptimizer(
-            compression_ratio=summarization_ratio
-        )
+        # Initialize optimizers with balanced profile if available
+        if OPTIMIZER_AVAILABLE:
+            opt_config = get_optimization_profile("balanced")
+            
+            # Remove compression_ratio from optimizer config (it's for summarizer only)
+            summarization_ratio = opt_config.pop('compression_ratio', 0.3)
+            
+            self.context_optimizer = ContextOptimizer(**opt_config)
+            self.summarization_optimizer = SummarizationOptimizer(
+                compression_ratio=summarization_ratio
+            )
+        else:
+            self.context_optimizer = None
+            self.summarization_optimizer = None
         
         self.connect_db()
         self.connect_redis()
@@ -1109,7 +1121,7 @@ class InteractiveMemorySystem:
         full_context = "\n".join(context_parts)
         original_context_length = len(full_context)
         
-        if self.enable_optimization and context_parts:
+        if self.enable_optimization and self.context_optimizer and context_parts:
             print(f"   🎯 Optimizing context for memory efficiency...")
             
             # Convert context parts to structured format for optimization
