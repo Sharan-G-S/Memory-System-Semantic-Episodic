@@ -6,6 +6,7 @@ Enhanced Interactive Memory System
 - Hybrid search across all memory types
 - Real-time storage indicators
 - Redis-based temporary memory cache (last 15 chats) for fast access
+- Context optimization for memory and token efficiency
 """
 import os
 import sys
@@ -18,6 +19,12 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
+# Add src to path for optimization imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
+from services.context_optimizer import ContextOptimizer, SummarizationOptimizer
+from config.optimization_config import get_optimization_profile, get_config_for_model
+
 load_dotenv()
 
 try:
@@ -28,15 +35,28 @@ except ImportError:
 
 
 class InteractiveMemorySystem:
-    """Enhanced memory system with layer visibility and Redis-based temporary memory cache"""
+    """Enhanced memory system with layer visibility, Redis cache, and context optimization"""
     
-    def __init__(self):
+    def __init__(self, optimization_profile="balanced", enable_optimization=True):
         self.conn = None
         self.user_id = "default_user"
         self.groq_client = None
         self.current_chat_id = None
         # Redis connection for temporary memory cache
         self.redis_client = None
+        # Context optimization
+        self.enable_optimization = enable_optimization
+        self.optimization_profile = optimization_profile
+        
+        # Initialize optimizers with profile
+        if self.enable_optimization:
+            opt_config = get_optimization_profile(optimization_profile)
+            self.context_optimizer = ContextOptimizer(**opt_config)
+            self.summarization_optimizer = SummarizationOptimizer(
+                compression_ratio=opt_config.get('compression_ratio', 0.3)
+            )
+            print(f"🎯 Context Optimization: {optimization_profile.upper()} profile")
+        
         self.connect_db()
         self.connect_redis()
         self.setup_groq()
@@ -1083,9 +1103,42 @@ class InteractiveMemorySystem:
         
         print(f"   ✓ Retrieved context from {len(results['semantic_knowledge']) + len(results['episodic_messages']) + len(results['episodic_episodes'])} sources")
         
-        # Generate response
+        # Apply context optimization before sending to LLM
         full_context = "\n".join(context_parts)
+        original_context_length = len(full_context)
         
+        if self.enable_optimization and context_parts:
+            print(f"   🎯 Optimizing context for memory efficiency...")
+            
+            # Convert context parts to structured format for optimization
+            contexts_to_optimize = []
+            for part in context_parts:
+                if part.strip():  # Skip empty strings
+                    contexts_to_optimize.append({
+                        "content": part,
+                        "score": 0.8  # Default score
+                    })
+            
+            # Apply optimization
+            optimized_contexts, opt_stats = self.context_optimizer.optimize(
+                contexts=contexts_to_optimize,
+                query=message
+            )
+            
+            # Reconstruct context from optimized results
+            if optimized_contexts:
+                optimized_parts = [ctx['content'] for ctx in optimized_contexts]
+                full_context = "\n".join(optimized_parts)
+                
+                # Print optimization statistics
+                print(f"   📊 Optimization Results:")
+                print(f"      • Original: ~{opt_stats['original_tokens']} tokens")
+                print(f"      • Optimized: ~{opt_stats['final_tokens']} tokens")
+                print(f"      • Saved: {opt_stats['reduction_percentage']:.1f}%")
+                print(f"      • Duplicates removed: {opt_stats['duplicates_removed']}")
+                print(f"      • Low-entropy filtered: {opt_stats['low_entropy_removed']}")
+        
+        # Generate response
         if self.groq_client:
             try:
                 response = self.groq_client.chat.completions.create(
@@ -1195,5 +1248,46 @@ MEMORY CONTEXT:
 
 
 if __name__ == "__main__":
-    app = InteractiveMemorySystem()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Interactive Memory System with Context Optimization")
+    parser.add_argument(
+        "--optimization",
+        choices=["conservative", "balanced", "aggressive", "quality", "off"],
+        default="balanced",
+        help="Context optimization profile (default: balanced)"
+    )
+    parser.add_argument(
+        "--no-optimization",
+        action="store_true",
+        help="Disable context optimization completely"
+    )
+    
+    args = parser.parse_args()
+    
+    # Determine if optimization is enabled
+    enable_opt = not args.no_optimization and args.optimization != "off"
+    opt_profile = args.optimization if args.optimization != "off" else "balanced"
+    
+    # Display configuration
+    if enable_opt:
+        print(f"\n🚀 Starting Interactive Memory System")
+        print(f"   Optimization: {opt_profile.upper()}")
+        print(f"   Profile Details:")
+        if opt_profile == "conservative":
+            print(f"   • Minimal optimization, preserves most content")
+        elif opt_profile == "balanced":
+            print(f"   • Balanced optimization for efficiency and quality")
+        elif opt_profile == "aggressive":
+            print(f"   • Maximum optimization, focuses on token reduction")
+        elif opt_profile == "quality":
+            print(f"   • Prioritizes quality over token savings")
+        print()
+    else:
+        print(f"\n🚀 Starting Interactive Memory System (Optimization Disabled)\n")
+    
+    app = InteractiveMemorySystem(
+        optimization_profile=opt_profile,
+        enable_optimization=enable_opt
+    )
     app.run()
