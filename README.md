@@ -1,6 +1,6 @@
 # 🧠 Interactive Memory System
 
-A dual-layer semantic + episodic memory system with **Redis cache**, **advanced metadata filtering**, and intelligent AI-powered Q&A capabilities.
+A dual-layer semantic + episodic memory system with **Redis cache**, **context optimization**, **advanced metadata filtering**, and intelligent AI-powered Q&A capabilities.
 
 ## 🚀 Quick Start
 
@@ -23,13 +23,25 @@ cp .env.example .env
 # 5. Set up database with metadata support
 psql -U postgres -d semantic_memory < database/add_metadata_support.sql
 
-# 6. Run the application
-python3 interactive_memory_app.py
+# 6. Run the application with optimization (recommended)
+python3 interactive_memory_app.py --optimization balanced
+
+# Or run without optimization
+python3 interactive_memory_app.py --no-optimization
 ```
 
 ## 📋 Features
 
-✅ **Advanced Metadata Filtering (NEW!)**
+✅ **Context Optimization System (NEW!)**
+- **30-70% token reduction**: Minimize LLM costs and context window usage
+- **5-stage pipeline**: Deduplication → Entropy filtering → Compression → Re-ranking → Token limiting
+- **4 optimization profiles**: Conservative, Balanced, Aggressive, Quality
+- **Intelligent filtering**: Removes duplicates, low-information content, irrelevant contexts
+- **Re-ranking with iteration**: Verifies quality with threshold-based refinement
+- **Real-time statistics**: Track token savings and optimization metrics
+- See [CONTEXT_OPTIMIZATION_GUIDE.md](docs/CONTEXT_OPTIMIZATION_GUIDE.md) for complete guide
+
+✅ **Advanced Metadata Filtering**
 - **10 filtering techniques**: Exact match, range, multi-value, hierarchical, composite, pattern matching, geospatial, time-based, statistical, tag hierarchy
 - **Precision retrieval**: Filter by category, tags, importance, time, metadata fields
 - **10-100x faster** queries with indexed filtering
@@ -169,6 +181,65 @@ python3 test_metadata_filtering.py
 
 # Run demo
 python3 demo_metadata_filtering.py
+```
+
+## 🎯 Context Optimization
+
+The system includes intelligent context optimization to reduce memory usage, token consumption, and LLM costs:
+
+### Usage
+
+```bash
+# Balanced optimization (default) - 30-50% token reduction
+python3 interactive_memory_app.py --optimization balanced
+
+# Aggressive optimization - 50-70% token reduction  
+python3 interactive_memory_app.py --optimization aggressive
+
+# Quality optimization - 20-35% reduction, max quality
+python3 interactive_memory_app.py --optimization quality
+
+# Conservative - 10-20% reduction, minimal filtering
+python3 interactive_memory_app.py --optimization conservative
+
+# Disable optimization
+python3 interactive_memory_app.py --no-optimization
+```
+
+### What Gets Optimized
+
+✅ **Removes:**
+- Exact duplicate content
+- Near-duplicate content (>85% similar)
+- Low-entropy text (repetitive, uninformative)
+- Irrelevant content (low query relevance)
+
+✅ **Compresses:**
+- Redundant phrases
+- Excess whitespace
+- Non-essential sentences
+
+✅ **Verifies:**
+- Re-ranks by relevance
+- Iterates if quality drops below threshold
+- Enforces token limits
+
+### Cost Savings Example
+
+| Profile | Token Reduction | Monthly Cost (10K requests) |
+|---------|----------------|----------------------------|
+| No optimization | 0% | $1,500 |
+| Balanced | 50% | $750 💰 Save $750 |
+| Aggressive | 70% | $450 💰 Save $1,050 |
+
+**📚 Learn More:**
+- [Complete Guide](docs/CONTEXT_OPTIMIZATION_GUIDE.md)
+- [Quick Start](docs/OPTIMIZATION_QUICKSTART.md)
+
+**🧪 Try It:**
+```bash
+# Run optimization tests
+python3 test_context_optimization.py
 ```
 
 ## 🗂️ Project Structure
