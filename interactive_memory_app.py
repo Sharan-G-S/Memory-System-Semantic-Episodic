@@ -1468,26 +1468,52 @@ class InteractiveMemorySystem:
         print(f"{'='*70}")
         results = self.hybrid_search(message, limit=10)
         
-        # STEP 1.5: BI-ENCODER RE-RANKING (if enabled)
-        if self.biencoder_enabled and self.biencoder:
+        # Flatten all results for processing
+        all_candidates = []
+        for source, items in results.items():
+            for item in items:
+                if 'content' in item:
+                    all_candidates.append({
+                        'content': item['content'],
+                        'source': source,
+                        'metadata': item
+                    })
+        
+        # STEP 1.5: DEDUPLICATION (before re-ranking)
+        print(f"\n{'='*70}")
+        print(f"🔄 STEP 1.5: DEDUPLICATION")
+        print(f"{'='*70}")
+        print(f"Removing duplicate content across memory layers...\n")
+        
+        if all_candidates:
+            print(f"   📋 Initial candidates: {len(all_candidates)} items")
+            
+            # Remove exact duplicates
+            seen_content = set()
+            unique_candidates = []
+            exact_duplicates = 0
+            
+            for candidate in all_candidates:
+                content_normalized = candidate['content'].strip().lower()
+                if content_normalized not in seen_content:
+                    seen_content.add(content_normalized)
+                    unique_candidates.append(candidate)
+                else:
+                    exact_duplicates += 1
+            
+            print(f"   ✓ Removed {exact_duplicates} exact duplicates")
+            print(f"   ✓ Remaining unique items: {len(unique_candidates)}\n")
+            
+            all_candidates = unique_candidates
+        
+        # STEP 1.6: BI-ENCODER RE-RANKING (after deduplication)
+        if self.biencoder_enabled and self.biencoder and all_candidates:
             print(f"\n{'='*70}")
-            print(f"🎯 STEP 1.5: BI-ENCODER RE-RANKING & SCORING")
+            print(f"🎯 STEP 1.6: BI-ENCODER RE-RANKING & SCORING")
             print(f"{'='*70}")
             print(f"Applying semantic re-ranking with cosine similarity...\n")
             
-            # Flatten all results for re-ranking
-            all_candidates = []
-            for source, items in results.items():
-                for item in items:
-                    if 'content' in item:
-                        all_candidates.append({
-                            'content': item['content'],
-                            'source': source,
-                            'metadata': item
-                        })
-            
-            if all_candidates:
-                print(f"   📋 Candidates: {len(all_candidates)} items from all layers")
+            print(f"   📋 Deduplicated candidates: {len(all_candidates)} items")
                 documents = [c['content'] for c in all_candidates]
                 
                 # Build index and re-rank
