@@ -98,7 +98,7 @@ REDIS_PASSWORD=
 **Purpose**: Create RediSearch index for vector similarity search
 
 **Index Schema**:
-- `query_vector`: VECTOR field (HNSW, FLOAT32, DIM=384, COSINE distance)
+- `query_vector`: VECTOR field (FLAT, FLOAT32, DIM=384, COSINE distance)
 - `created_at`: NUMERIC field (sortable)
 - Prefix: `stm:*`
 

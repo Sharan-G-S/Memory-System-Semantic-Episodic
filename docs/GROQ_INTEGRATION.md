@@ -231,7 +231,7 @@ search_and_display(query, limit=10)  # Show top 10 results
 ### Search is slow?
 - Check database indexes: `\di` in psql
 - Reduce result limit
-- Ensure HNSW indexes are built
+- Ensure IVFFlat indexes are built
 
 ### Connection errors?
 - Verify database is running

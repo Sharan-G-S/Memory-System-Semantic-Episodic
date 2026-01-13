@@ -3,7 +3,7 @@
 ## 🎯 Overview
 
 Enhanced memory system with **RRF (Reciprocal Rank Fusion)** algorithm combining:
-- ✅ **Vector Search** (pgvector/HNSW)
+- ✅ **Vector Search** (pgvector/IVFFlat)
 - ✅ **BM25** (Full-text search)
 - ✅ **Redis Cache** (Unified indexing)
 - ✅ **Search Metrics** (Percentage scores)
