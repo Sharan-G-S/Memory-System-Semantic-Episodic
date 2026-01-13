@@ -121,8 +121,24 @@ class InteractiveMemorySystem:
             self.biencoder = None
             self.biencoder_enabled = False
         
+        # Initialize RAG-enhanced model selector
+        self.model_selector = None  # Will be initialized after DB connection
+        
         self.connect_db()
         self.connect_redis()
+        
+        # Initialize model selector with DB and Redis for RAG
+        try:
+            from services.model_selector import ModelSelector  # type: ignore
+            self.model_selector = ModelSelector(
+                db_connection=self.conn,
+                redis_client=self.redis_client
+            )
+            print("✓ RAG-Enhanced Model Selector initialized")
+        except Exception as e:
+            print(f"⚠️  Model selector: Using default (RAG features disabled)")
+            self.model_selector = None
+        
         self.setup_groq()
         self.ensure_super_chat()
         self.load_recent_to_temp_memory()
@@ -1436,19 +1452,36 @@ class InteractiveMemorySystem:
         
         # Add relevant knowledge
         if results['semantic_knowledge']:
-            print(f"📚 Adding SEMANTIC KNOWLEDGE: {len(results['semantic_knowledge'][:3])} entries")
+            print(f"📚 Adding SEMANTIC KNOWLEDGE: {len(results['semantic_knowledge'][:5])} entries")
             context_parts.append("\nRELEVANT KNOWLEDGE:")
-            for item in results['semantic_knowledge'][:3]:
+            for item in results['semantic_knowledge'][:5]:  # Increased from 3 to 5
                 context_parts.append(f"- {item['content']}")
+        
+        # IMPORTANT: Also retrieve ALL knowledge base entries for this user (not just search results)
+        # This ensures stored facts like "favorite color" are always available
+        print(f"📚 Adding ALL STORED KNOWLEDGE (fallback for non-matched queries)")
+        cur.execute("""
+            SELECT content, category, created_at
+            FROM knowledge_base
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 20
+        """, (self.user_id,))
+        all_knowledge = cur.fetchall()
+        
+        if all_knowledge:
+            context_parts.append("\nALL STORED USER KNOWLEDGE:")
+            for item in all_knowledge:
+                context_parts.append(f"- {item['content']}")
+            print(f"   ✓ Added {len(all_knowledge)} knowledge entries")
         
         # Add relevant messages WITH TIMESTAMPS (only if not already in temp_memory)
         if results['episodic_messages']:
             print(f"📅 Adding EPISODIC MESSAGES: {len(results['episodic_messages'][:10])} conversations")
-        if results['episodic_messages']:
             context_parts.append("\nRECENT CONVERSATIONS (from history):")
             for item in results['episodic_messages'][:10]:
                 timestamp = item['created_at'].strftime('%b %d, %Y %I:%M %p') if item['created_at'] else 'Unknown time'
-                context_parts.append(f"- [{timestamp}] {item['role']}: {item['content'][:100]}")
+                context_parts.append(f"- [{timestamp}] {item['role']}: {item['content']}")  # Include full content
         
         # If asking about specific time, get messages from that time
         if time_match or target_date:
@@ -1496,11 +1529,23 @@ class InteractiveMemorySystem:
         print(f"🤖 STEP 4: MODEL SELECTION & GENERATION")
         print(f"{'='*70}")
         
+        # Select best model using RAG if available
+        rag_insights = {}
         if self.groq_client:
-            # Select best model for chat task
-            model_name, model_reason = select_model_for_task("chat")
-            print(f"Selected Model: {model_name}")
-            print(f"Reason: {model_reason}")
+            if self.model_selector:
+                # Use RAG-enhanced model selection
+                model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
+                    task_type="chat",
+                    query_context=message,
+                    user_id=self.user_id,
+                    verbose=True
+                )
+            else:
+                # Fallback to default selection
+                model_name, model_reason = select_model_for_task("chat")
+                print(f"Selected Model: {model_name}")
+                print(f"Reason: {model_reason}")
+            
             print(f"Context size: {len(full_context)} chars (~{len(full_context) // 4} tokens)")
             print(f"{'='*70}")
         
@@ -1537,11 +1582,12 @@ class InteractiveMemorySystem:
         else:
             print(f"⚠️  Optimization disabled - using context as-is")
             print(f"{'='*70}\n")
-        
-        full_context = "\n".join(context_parts)
-        print(f"   ℹ️  Context already optimized at storage time - using directly")
+            print(f"   ℹ️  Using assembled context directly (already retrieved from DB/Redis)")
         
         # Generate response
+        start_time = datetime.now()
+        response_success = True
+        
         if self.groq_client:
             # Select best model for chat task
             model_name, model_reason = select_model_for_task("chat")
@@ -1564,8 +1610,41 @@ Answer the user's question based on this context. If the information is not avai
                     max_tokens=500
                 )
                 reply = response.choices[0].message.content
+                
+                # Calculate response metrics
+                latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                token_count = response.usage.total_tokens if hasattr(response, 'usage') else 0
+                
+                # Log performance for RAG-based learning
+                if self.model_selector:
+                    self.model_selector.log_performance(
+                        user_id=self.user_id,
+                        task_type="chat",
+                        model_name=model_name,
+                        query_context=message,
+                        response_quality=0.8,  # Default quality (can be improved with feedback)
+                        latency_ms=latency_ms,
+                        token_count=token_count,
+                        success=True
+                    )
+                
             except Exception as e:
                 reply = f"Based on your stored data:\n{full_context[:500]}...\n\nNote: Unable to generate AI response. Error: {str(e)}"
+                response_success = False
+                
+                # Log failure
+                if self.model_selector:
+                    latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                    self.model_selector.log_performance(
+                        user_id=self.user_id,
+                        task_type="chat",
+                        model_name=model_name,
+                        query_context=message,
+                        response_quality=0.0,
+                        latency_ms=latency_ms,
+                        token_count=0,
+                        success=False
+                    )
         else:
             # Fallback response without Groq
             reply = f"Based on your stored information:\n\n{full_context}\n\nTo get AI-powered responses, configure GROQ_API_KEY in your .env file."

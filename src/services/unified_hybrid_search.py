@@ -366,7 +366,8 @@ class UnifiedHybridSearch:
                 "vector_score": round(vector_score, 4),
                 "keyword_score": round(keyword_score, 4),
                 "vector_percentage": round(vector_score * 100, 2),
-                "bm25_percentage": round(keyword_score * 100, 2),
+                "keyword_percentage": round(keyword_score * 100, 2),  # Fixed: was bm25_percentage
+                "bm25_percentage": round(keyword_score * 100, 2),  # Keep for backward compatibility
                 "combined_percentage": round(rrf_score * 100, 2),
                 "created_at": data_str.get('created_at', data_str.get('cached_at', 'unknown'))
             })
