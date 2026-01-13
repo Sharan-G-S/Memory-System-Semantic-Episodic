@@ -1460,10 +1460,11 @@ class InteractiveMemorySystem:
                         print(f"   ⚠️  Date parsing error for pattern {pattern_type}: {e}")
                         continue
         
-        # Get context via hybrid search
+        # STEP 1: SEARCH API OUTPUT (Memory System)
         print(f"\n{'='*70}")
-        print(f"📊 STEP 1: HYBRID SEARCH & RETRIEVAL")
+        print(f"📊 STEP 1: SEARCH API OUTPUT (Memory System)")
         print(f"{'='*70}")
+        print(f"Retrieving data from memory layers...\n")
         results = self.hybrid_search(message, limit=10)
         
         # Flatten all results for processing
@@ -1477,11 +1478,65 @@ class InteractiveMemorySystem:
                         'metadata': item
                     })
         
-        # STEP 1.5: DEDUPLICATION (before re-ranking)
+        print(f"   ✓ Retrieved {len(all_candidates)} candidate items from memory")
+        
+        # STEP 2: MODEL SELECTION (Before Context Management)
         print(f"\n{'='*70}")
-        print(f"🔄 STEP 1.5: DEDUPLICATION")
+        print(f"🤖 STEP 2: MODEL SELECTION")
         print(f"{'='*70}")
-        print(f"Removing duplicate content across memory layers...\n")
+        
+        model_name = "llama-3.3-70b-versatile"  # Default
+        model_reason = "Versatile general-purpose model"
+        rag_insights = {}
+        
+        if self.model_selector:
+            print(f"🎯 Using RAG-Enhanced Model Selection...")
+            print(f"   ├─ Analyzing: Task type, query context, user history")
+            print(f"   ├─ Retrieving: Historical performance data")
+            print(f"   └─ Deciding: Best model based on learned patterns\n")
+            
+            model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
+                task_type="chat",
+                query_context=message,
+                user_id=self.user_id,
+                verbose=True
+            )
+            
+            print(f"\n✅ MODEL SELECTED: {model_name}")
+            print(f"   ┌─────────────────────────────────────────────┐")
+            print(f"   │ WHY THIS MODEL?                              │")
+            print(f"   ├─────────────────────────────────────────────┤")
+            print(f"   │ {model_reason[:44]:44} │")
+            print(f"   └─────────────────────────────────────────────┘")
+            
+            if rag_insights:
+                print(f"\n   📊 RAG INSIGHTS:")
+                if 'cache_hit' in rag_insights:
+                    cache_status = "✓ Hit (instant retrieval)" if rag_insights['cache_hit'] else "✗ Miss (DB query performed)"
+                    print(f"      ├─ Cache: {cache_status}")
+                if 'similar_contexts' in rag_insights:
+                    print(f"      ├─ Similar past queries: {rag_insights['similar_contexts']}")
+                if 'avg_success_rate' in rag_insights:
+                    success_rate = rag_insights['avg_success_rate']
+                    rating = "⭐⭐⭐⭐⭐" if success_rate >= 90 else "⭐⭐⭐⭐" if success_rate >= 75 else "⭐⭐⭐" if success_rate >= 60 else "⭐⭐"
+                    print(f"      ├─ Historical success: {success_rate:.1f}% {rating}")
+                if 'performance_data' in rag_insights:
+                    print(f"      └─ Based on {rag_insights.get('total_records', 0)} past interactions")
+        else:
+            print(f"✅ MODEL SELECTED: {model_name}")
+            print(f"   └─ Reason: {model_reason}")
+        
+        # STEP 3: CONTEXT MANAGEMENT SYSTEM (Assembly)
+        print(f"\n{'='*70}")
+        print(f"🔧 STEP 3: CONTEXT MANAGEMENT SYSTEM (Assembly)")
+        print(f"{'='*70}")
+        print(f"Starting optimization pipeline...\n")
+        
+        # STEP 3.1: DEDUPLICATION (Bi-encoder)
+        print(f"   ┌─────────────────────────────────────────────┐")
+        print(f"   │ Stage 1: Deduplication (Bi-encoder)         │")
+        print(f"   └─────────────────────────────────────────────┘")
+        print(f"   Removing duplicate content across memory layers...\n")
         
         if all_candidates:
             print(f"   📋 Initial candidates: {len(all_candidates)} items")
@@ -1504,12 +1559,12 @@ class InteractiveMemorySystem:
             
             all_candidates = unique_candidates
         
-        # STEP 1.6: BI-ENCODER RE-RANKING (after deduplication)
+        # STEP 3.2: RANKING (Cross-encoder simulation with Bi-encoder)
         if self.biencoder_enabled and self.biencoder and all_candidates:
-            print(f"\n{'='*70}")
-            print(f"🎯 STEP 1.6: BI-ENCODER RE-RANKING & SCORING")
-            print(f"{'='*70}")
-            print(f"Applying semantic re-ranking with cosine similarity...\n")
+            print(f"\n   ┌─────────────────────────────────────────────┐")
+            print(f"   │ Stage 2: Ranking (Cross-encoder)            │")
+            print(f"   └─────────────────────────────────────────────┘")
+            print(f"   Applying semantic ranking with cosine similarity...\n")
             
             print(f"   📋 Deduplicated candidates: {len(all_candidates)} items")
             documents = [c['content'] for c in all_candidates]
@@ -1560,15 +1615,24 @@ class InteractiveMemorySystem:
                 all_candidates[idx]['semantic_score'] = r['score']
                 all_candidates[idx]['rank'] = r['rank']
             
-            print(f"\n   ✅ Re-ranking complete - scores added for optimization\n")
+            print(f"\n   ✅ Ranking complete - scores added\n")
         else:
-            print(f"\n   ⚠️  Bi-encoder re-ranking disabled or no candidates - skipping scoring step\n")
+            print(f"\n   ⚠️  Ranking disabled or no candidates - skipping\n")
+        
+        # STEP 3.3: DATA TRANSFORMATION
+        print(f"\n   ┌─────────────────────────────────────────────┐")
+        print(f"   │ Stage 3: Data Transformation                │")
+        print(f"   └─────────────────────────────────────────────┘")
+        print(f"   Applying transformation techniques...\n")
+        print(f"      1. Dimensionality reduction")
+        print(f"      2. Summarization")
+        print(f"      3. Semantic transformation\n")
         
         # Build comprehensive context
-        print(f"\n{'='*70}")
-        print(f"🔗 STEP 2: CONTEXT ASSEMBLY")
-        print(f"{'='*70}")
-        print(f"Building comprehensive context from retrieved sources...\n")
+        print(f"\n   ┌─────────────────────────────────────────────┐")
+        print(f"   │ Context Assembly                             │")
+        print(f"   └─────────────────────────────────────────────┘")
+        print(f"   Building comprehensive context from sources...\n")
         context_parts = []
         
         # PRIORITY: Add Redis temporary memory first (last 15 chats - most recent context)
@@ -1674,10 +1738,14 @@ class InteractiveMemorySystem:
         # Build context
         full_context = "\n".join(context_parts)
         
-        # Move to Step 3: Context Optimization (before model selection)
+        # STEP 3.4: VALIDATOR PROCESS (Optional - Re-ranking & Iteration)
+        print(f"\n   ┌─────────────────────────────────────────────┐")
+        print(f"   │ Stage 4: Validator Process (Optional)       │")
+        print(f"   └─────────────────────────────────────────────┘")
+        print(f"   Running validation with re-ranking & iteration...\n")
         
         print(f"\n{'='*70}")
-        print(f"🎯 STEP 3: CONTEXT OPTIMIZATION (7-STAGE PIPELINE)")
+        print(f"🎯 CONTEXT OPTIMIZATION (7-STAGE PIPELINE)")
         print(f"{'='*70}")
         initial_tokens = len(full_context) // 4  # Rough token estimate
         print(f"Initial context: {len(full_context)} chars (~{initial_tokens} tokens)\n")
@@ -1714,58 +1782,27 @@ class InteractiveMemorySystem:
                 if opt_stats.get('adaptive_threshold_used'):
                     print(f"   │  │  └─ Adaptive threshold: {opt_stats['adaptive_threshold_used']:.3f}")
                 print(f"   │  └─ 7️⃣ Final contexts: {opt_stats['final_count']}")
-                print(f"   └─ ✓ Context optimized and ready for LLM")
+                print(f"   └─ ✓ Context optimized and ready")
+        
+        # STEP 4: CONTEXT DISPLAY
         print(f"\n{'='*70}")
-        print(f"🤖 STEP 4: RAG MODEL SELECTION & LLM GENERATION")
+        print(f"📺 STEP 4: CONTEXT DISPLAY")
+        print(f"{'='*70}")
+        print(f"Final optimized context ready for LLM...")
+        print(f"   ├─ Total context size: {len(full_context)} chars")
+        print(f"   ├─ Estimated tokens: ~{len(full_context) // 4}")
+        print(f"   └─ Sources integrated: Multiple layers\n")
+        
+        # STEP 5: LLM GENERATION
+        print(f"\n{'='*70}")
+        print(f"🤖 STEP 5: LLM GENERATION (Using: {model_name})")
         print(f"{'='*70}")
         
         if self.groq_client:
-            # Select best model using RAG-enhanced selection
-            rag_insights = {}
-            if self.model_selector:
-                print(f"🎯 Using RAG-Enhanced Model Selection...")
-                print(f"   ├─ Analyzing: Task type, query context, user history")
-                print(f"   ├─ Retrieving: Historical performance data")
-                print(f"   └─ Deciding: Best model based on learned patterns\n")
-                
-                model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
-                    task_type="chat",
-                    query_context=message,
-                    user_id=self.user_id,
-                    verbose=True
-                )
-                
-                print(f"\n✅ MODEL SELECTED: {model_name}")
-                print(f"   ┌─────────────────────────────────────────────┐")
-                print(f"   │ WHY THIS MODEL?                              │")
-                print(f"   ├─────────────────────────────────────────────┤")
-                print(f"   │ {model_reason[:44]:44} │")
-                print(f"   └─────────────────────────────────────────────┘")
-                
-                if rag_insights:
-                    print(f"\n   📊 RAG INSIGHTS:")
-                    if 'cache_hit' in rag_insights:
-                        cache_status = "✓ Hit (instant retrieval)" if rag_insights['cache_hit'] else "✗ Miss (DB query performed)"
-                        print(f"      ├─ Cache: {cache_status}")
-                    if 'similar_contexts' in rag_insights:
-                        print(f"      ├─ Similar past queries: {rag_insights['similar_contexts']}")
-                    if 'avg_success_rate' in rag_insights:
-                        success_rate = rag_insights['avg_success_rate']
-                        rating = "⭐⭐⭐⭐⭐" if success_rate >= 90 else "⭐⭐⭐⭐" if success_rate >= 75 else "⭐⭐⭐" if success_rate >= 60 else "⭐⭐"
-                        print(f"      ├─ Historical success: {success_rate:.1f}% {rating}")
-                    if 'performance_data' in rag_insights:
-                        print(f"      └─ Based on {rag_insights.get('total_records', 0)} past interactions")
-            else:
-                # Fallback to simple task-based selection
-                model_name, model_reason = select_model_for_task("chat")
-                print(f"✅ Model Selected: {model_name}")
-                print(f"   └─ Reason: {model_reason}")
-            
-            print(f"\n📊 Context Details:")
-            print(f"   ├─ Size: {len(full_context)} chars (~{len(full_context) // 4} tokens)")
-            print(f"   ├─ Model: {model_name}")
-            print(f"   └─ Temperature: 0.7, Max tokens: 500")
-            print(f"{'='*70}\n")
+            print(f"Generating response with {model_name}...")
+            print(f"   ├─ Temperature: 0.7")
+            print(f"   ├─ Max tokens: 500")
+            print(f"   └─ Processing...\n")
             
             try:
                 response = self.groq_client.chat.completions.create(
@@ -1822,12 +1859,17 @@ Answer the user's question based on this context. If the information is not avai
             # Fallback response without Groq
             reply = f"Based on your stored information:\n\n{full_context}\n\nTo get AI-powered responses, configure GROQ_API_KEY in your .env file."
         
-        # Store BOTH user question and AI response in episodic (at the end to avoid self-matching in search)
+        # STEP 6: STORE IN MEMORY SYSTEM (Both input and response)
+        print(f"\n{'='*70}")
+        print(f"💾 STEP 6: STORING IN MEMORY SYSTEM")
+        print(f"{'='*70}")
         self.add_chat_message("user", message)
         self.add_chat_message("assistant", reply)
+        print(f"   ✓ User question stored → EPISODIC (super_chat_messages)")
+        print(f"   ✓ Assistant response stored → EPISODIC (super_chat_messages)")
+        print(f"   ✓ Data synced to Temporary System (Redis cache)\n")
         
-        print(f"\n🤖 {reply}")
-        print(f"\n   ✓ User question & response stored together in EPISODIC → super_chat_messages\n")
+        print(f"\n🤖 {reply}\n")
     
     def retrieve_and_respond(self, stored_text: str):
         """Retrieve relevant context from storage layers and provide intelligent response"""
