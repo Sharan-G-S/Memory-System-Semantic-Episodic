@@ -121,7 +121,7 @@ class KnowledgeRepository:
         category: Optional[str] = None,
         tags: Optional[List[str]] = None
     ) -> List[SearchResult]:
-        """Search knowledge items by vector similarity using HNSW index"""
+        """Search knowledge items by vector similarity using IVFFlat index"""
         conditions = ["1 - (embedding <=> %s::vector) >= %s"]
         params = [embedding, min_similarity]
         
@@ -140,8 +140,7 @@ class KnowledgeRepository:
         where_clause = " AND ".join(conditions)
         
         with db_config.get_cursor() as cursor:
-            # Set ef_search for HNSW index quality/speed tradeoff
-            cursor.execute("SET LOCAL hnsw.ef_search = 100")
+            # IVFFlat index (no runtime parameters needed)
             
             cursor.execute(f"""
                 SELECT *,
@@ -241,8 +240,7 @@ class KnowledgeRepository:
         where_clause = " AND ".join(conditions) if conditions else "TRUE"
         
         with db_config.get_cursor() as cursor:
-            # Set HNSW search parameters
-            cursor.execute("SET LOCAL hnsw.ef_search = 100")
+            # IVFFlat index (no runtime tuning needed)
             
             # Combined query with both BM25 and vector scores
             cursor.execute(f"""

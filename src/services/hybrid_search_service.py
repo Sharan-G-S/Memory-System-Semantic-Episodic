@@ -1,5 +1,5 @@
 """
-Hybrid Search Service - Combines BM25 lexical search with HNSW vector search
+Hybrid Search Service - Combines BM25 lexical search with IVFFlat vector search
 Optimized for 10GB+ memory datasets with PostgreSQL full-text search
 """
 from typing import List, Dict, Any, Optional, Tuple
@@ -12,7 +12,7 @@ class HybridSearchService:
     """
     Hybrid search combining:
     - BM25-style full-text search (PostgreSQL ts_rank_cd)
-    - HNSW vector similarity search (pgvector)
+    - IVFFlat vector similarity search (pgvector)
     - Weighted combination for optimal results
     """
     
@@ -149,9 +149,9 @@ class HybridSearchService:
         tags: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Vector similarity search using HNSW index
+        Vector similarity search using IVFFlat index
         
-        Uses pgvector's HNSW index for efficient nearest neighbor search
+        Uses pgvector's IVFFlat index for efficient nearest neighbor search
         """
         # Generate query embedding
         query_embedding = self.embedding_service.embed_text(query)
@@ -175,9 +175,7 @@ class HybridSearchService:
             
             where_clause = " AND ".join(conditions) if conditions else "TRUE"
             
-            # Use cosine similarity with HNSW index
-            # Set ef_search parameter for search-time quality/speed tradeoff
-            cursor.execute("SET LOCAL hnsw.ef_search = 100")
+            # Use cosine similarity with IVFFlat index (no tuning parameters needed)
             
             sql = f"""
                 SELECT 

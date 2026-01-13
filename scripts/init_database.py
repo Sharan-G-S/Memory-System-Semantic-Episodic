@@ -59,7 +59,7 @@ def init_schema():
     print("\nInitializing database schema...")
     
     # Read and execute schema file
-    schema_path = Path(__file__).parent.parent / 'database' / 'unified_schema.sql'
+    schema_path = Path(__file__).parent.parent / 'database' / 'enhanced_schema.sql'
     with open(schema_path, 'r') as f:
         schema_sql = f.read()
     

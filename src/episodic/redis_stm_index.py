@@ -20,13 +20,13 @@ def create_index():
         pass
 
     try:
-        # Create index with vector field for episodic namespace
+        # Create index with vector field for episodic namespace (using FLAT for simpler hybrid search)
         r.execute_command(
             "FT.CREATE", INDEX,
             "ON", "HASH",
             "PREFIX", "1", "episodic:stm:",
             "SCHEMA",
-            "query_vector", "VECTOR", "HNSW", "6",
+            "query_vector", "VECTOR", "FLAT", "6",
             "TYPE", "FLOAT32",
             "DIM", str(DIM),
             "DISTANCE_METRIC", "COSINE",
