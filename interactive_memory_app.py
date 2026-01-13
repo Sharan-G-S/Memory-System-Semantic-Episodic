@@ -50,10 +50,14 @@ except (ImportError, ModuleNotFoundError) as e:
 
 # Bi-encoder re-ranking support
 try:
+    # Add src to path for imports
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
     from services.biencoder_reranker import BiEncoderReranker, get_recommended_config  # type: ignore
     BIENCODER_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
+    print("✓ Bi-Encoder Re-Ranking module loaded")
+except (ImportError, ModuleNotFoundError) as e:
     BIENCODER_AVAILABLE = False
+    print(f"⚠️  Bi-Encoder Re-Ranking not available: {e}")
 
 load_dotenv()
 
@@ -108,11 +112,18 @@ class InteractiveMemorySystem:
         if BIENCODER_AVAILABLE:
             try:
                 biencoder_config = get_recommended_config("fast")
+                print(f"\n🎯 Initializing Bi-Encoder Re-Ranker...")
+                print(f"   ├─ Model: {biencoder_config['model_name']}")
+                print(f"   ├─ Batch Size: {biencoder_config['batch_size']}")
+                print(f"   ├─ Score Threshold: {biencoder_config['score_threshold']}")
+                print(f"   └─ Description: {biencoder_config['description']}")
+                
                 self.biencoder = BiEncoderReranker(
                     model_name=biencoder_config['model_name'],
                     batch_size=biencoder_config['batch_size']
                 )
                 self.biencoder_enabled = True
+                print(f"✓ Bi-Encoder Re-Ranking: ENABLED")
             except Exception as e:
                 print(f"⚠️  Bi-encoder initialization failed: {e}")
                 self.biencoder = None
@@ -120,6 +131,7 @@ class InteractiveMemorySystem:
         else:
             self.biencoder = None
             self.biencoder_enabled = False
+            print(f"⚠️  Bi-Encoder Re-Ranking: DISABLED (module not available)")
         
         # Initialize RAG-enhanced model selector
         self.model_selector = None  # Will be initialized after DB connection
@@ -1627,15 +1639,26 @@ class InteractiveMemorySystem:
                     verbose=True
                 )
                 
-                print(f"\n✅ Model Selected: {model_name}")
-                print(f"   ├─ Reason: {model_reason}")
+                print(f"\n✅ MODEL SELECTED: {model_name}")
+                print(f"   ┌─────────────────────────────────────────────┐")
+                print(f"   │ WHY THIS MODEL?                              │")
+                print(f"   ├─────────────────────────────────────────────┤")
+                print(f"   │ {model_reason[:44]:44} │")
+                print(f"   └─────────────────────────────────────────────┘")
+                
                 if rag_insights:
+                    print(f"\n   📊 RAG INSIGHTS:")
                     if 'cache_hit' in rag_insights:
-                        print(f"   ├─ Cache: {'Hit ✓' if rag_insights['cache_hit'] else 'Miss'}")
+                        cache_status = "✓ Hit (instant retrieval)" if rag_insights['cache_hit'] else "✗ Miss (DB query performed)"
+                        print(f"      ├─ Cache: {cache_status}")
                     if 'similar_contexts' in rag_insights:
-                        print(f"   ├─ Similar contexts found: {rag_insights['similar_contexts']}")
+                        print(f"      ├─ Similar past queries: {rag_insights['similar_contexts']}")
                     if 'avg_success_rate' in rag_insights:
-                        print(f"   └─ Historical success rate: {rag_insights['avg_success_rate']:.1f}%")
+                        success_rate = rag_insights['avg_success_rate']
+                        rating = "⭐⭐⭐⭐⭐" if success_rate >= 90 else "⭐⭐⭐⭐" if success_rate >= 75 else "⭐⭐⭐" if success_rate >= 60 else "⭐⭐"
+                        print(f"      ├─ Historical success: {success_rate:.1f}% {rating}")
+                    if 'performance_data' in rag_insights:
+                        print(f"      └─ Based on {rag_insights.get('total_records', 0)} past interactions")
             else:
                 # Fallback to simple task-based selection
                 model_name, model_reason = select_model_for_task("chat")
