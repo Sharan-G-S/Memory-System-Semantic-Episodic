@@ -1401,9 +1401,7 @@ class InteractiveMemorySystem:
         start_time = datetime.now()  # Capture start time for latency calculation
         print(f"\n💭 Processing your question...")
         
-        # Store user message in episodic
-        self.add_chat_message("user", message)
-        print(f"   ✓ Question stored in EPISODIC → super_chat_messages")
+        # Note: User message will be stored AFTER search & LLM response to avoid self-matching
         
         time_patterns = [
             r'(\d{1,2}:\d{2}\s*(?:am|pm))',  # 7:40pm, 7:40 pm
@@ -1824,11 +1822,12 @@ Answer the user's question based on this context. If the information is not avai
             # Fallback response without Groq
             reply = f"Based on your stored information:\n\n{full_context}\n\nTo get AI-powered responses, configure GROQ_API_KEY in your .env file."
         
-        # Store AI response in episodic
+        # Store BOTH user question and AI response in episodic (at the end to avoid self-matching in search)
+        self.add_chat_message("user", message)
         self.add_chat_message("assistant", reply)
         
         print(f"\n🤖 {reply}")
-        print(f"\n   ✓ Response stored in EPISODIC → super_chat_messages\n")
+        print(f"\n   ✓ User question & response stored together in EPISODIC → super_chat_messages\n")
     
     def retrieve_and_respond(self, stored_text: str):
         """Retrieve relevant context from storage layers and provide intelligent response"""
