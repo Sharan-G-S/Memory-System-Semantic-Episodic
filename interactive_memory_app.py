@@ -1514,59 +1514,57 @@ class InteractiveMemorySystem:
             print(f"Applying semantic re-ranking with cosine similarity...\n")
             
             print(f"   📋 Deduplicated candidates: {len(all_candidates)} items")
-                documents = [c['content'] for c in all_candidates]
+            documents = [c['content'] for c in all_candidates]
+            
+            # Build index and re-rank
+            self.biencoder.build_index(documents)
+            reranked = self.biencoder.rerank(
+                query=message,
+                top_k=len(all_candidates),  # Get all with scores
+                score_threshold=None  # Don't filter yet
+            )
+            
+            print(f"\n   🏆 RE-RANKING RESULTS (Cosine Similarity Scores):\n")
+            print(f"   {'Rank':<6} {'Score':<8} {'Source':<25} {'Content Preview':<50}")
+            print(f"   {'-'*6} {'-'*8} {'-'*25} {'-'*50}")
+            
+            for r in reranked[:10]:  # Show top 10
+                idx = r['index']
+                score = r['score']
+                source = all_candidates[idx]['source']
+                content = r['document'][:47] + '...' if len(r['document']) > 50 else r['document']
+                rank = r['rank']
                 
-                # Build index and re-rank
-                self.biencoder.build_index(documents)
-                reranked = self.biencoder.rerank(
-                    query=message,
-                    top_k=len(all_candidates),  # Get all with scores
-                    score_threshold=None  # Don't filter yet
-                )
+                # Visual indicator for score quality
+                if score >= 0.7:
+                    indicator = "🟢"  # Excellent
+                elif score >= 0.5:
+                    indicator = "🟡"  # Good
+                else:
+                    indicator = "🔴"  # Low
                 
-                print(f"\n   🏆 RE-RANKING RESULTS (Cosine Similarity Scores):\n")
-                print(f"   {'Rank':<6} {'Score':<8} {'Source':<25} {'Content Preview':<50}")
-                print(f"   {'-'*6} {'-'*8} {'-'*25} {'-'*50}")
-                
-                for r in reranked[:10]:  # Show top 10
-                    idx = r['index']
-                    score = r['score']
-                    source = all_candidates[idx]['source']
-                    content = r['document'][:47] + '...' if len(r['document']) > 50 else r['document']
-                    rank = r['rank']
-                    
-                    # Visual indicator for score quality
-                    if score >= 0.7:
-                        indicator = "🟢"  # Excellent
-                    elif score >= 0.5:
-                        indicator = "🟡"  # Good
-                    else:
-                        indicator = "🔴"  # Low
-                    
-                    print(f"   #{rank:<5} {score:.4f} {indicator} {source:<22} {content}")
-                
-                # Statistics
-                scores = [r['score'] for r in reranked]
-                avg_score = sum(scores) / len(scores) if scores else 0
-                high_quality = sum(1 for s in scores if s >= 0.6)
-                
-                print(f"\n   📊 RANKING METRICS:")
-                print(f"      ├─ Total items ranked: {len(reranked)}")
-                print(f"      ├─ Average similarity: {avg_score:.4f}")
-                print(f"      ├─ High quality (≥0.6): {high_quality}/{len(reranked)}")
-                print(f"      └─ Ranking method: Bi-encoder cosine similarity")
-                
-                # Update results with ranked scores for optimization
-                for r in reranked:
-                    idx = r['index']
-                    all_candidates[idx]['semantic_score'] = r['score']
-                    all_candidates[idx]['rank'] = r['rank']
-                
-                print(f"\n   ✅ Re-ranking complete - scores added for optimization\n")
-            else:
-                print(f"   ⚠️  No candidates to rank\n")
+                print(f"   #{rank:<5} {score:.4f} {indicator} {source:<22} {content}")
+            
+            # Statistics
+            scores = [r['score'] for r in reranked]
+            avg_score = sum(scores) / len(scores) if scores else 0
+            high_quality = sum(1 for s in scores if s >= 0.6)
+            
+            print(f"\n   📊 RANKING METRICS:")
+            print(f"      ├─ Total items ranked: {len(reranked)}")
+            print(f"      ├─ Average similarity: {avg_score:.4f}")
+            print(f"      ├─ High quality (≥0.6): {high_quality}/{len(reranked)}")
+            print(f"      └─ Ranking method: Bi-encoder cosine similarity")
+            
+            # Update results with ranked scores for optimization
+            for r in reranked:
+                idx = r['index']
+                all_candidates[idx]['semantic_score'] = r['score']
+                all_candidates[idx]['rank'] = r['rank']
+            
+            print(f"\n   ✅ Re-ranking complete - scores added for optimization\n")
         else:
-            print(f"\n   ⚠️  Bi-encoder re-ranking disabled - skipping scoring step\n")
+            print(f"\n   ⚠️  Bi-encoder re-ranking disabled or no candidates - skipping scoring step\n")
         
         # Build comprehensive context
         print(f"\n{'='*70}")
