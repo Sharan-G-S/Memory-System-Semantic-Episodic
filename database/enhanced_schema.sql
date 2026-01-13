@@ -69,11 +69,12 @@ CREATE TABLE IF NOT EXISTS semantic_skill (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create indexes for vector search (HNSW)
-CREATE INDEX IF NOT EXISTS idx_user_persona_embedding ON user_persona USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
-CREATE INDEX IF NOT EXISTS idx_knowledge_embedding ON semantic_knowledge USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
-CREATE INDEX IF NOT EXISTS idx_process_embedding ON semantic_process USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
-CREATE INDEX IF NOT EXISTS idx_skill_embedding ON semantic_skill USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+-- Create indexes for HYBRID search (Vector + Full-Text)
+-- IVFFlat indexes for vector similarity (simpler than HNSW, optimized for hybrid search)
+CREATE INDEX IF NOT EXISTS idx_user_persona_embedding ON user_persona USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_knowledge_embedding ON semantic_knowledge USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_process_embedding ON semantic_process USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_skill_embedding ON semantic_skill USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- Create full-text search indexes
 CREATE INDEX IF NOT EXISTS idx_knowledge_tsv ON semantic_knowledge USING gin(content_tsv);
