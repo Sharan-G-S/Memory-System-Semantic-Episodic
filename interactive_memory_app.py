@@ -1394,16 +1394,16 @@ class InteractiveMemorySystem:
     
     def chat_with_context(self, message: str):
         """Chat with full context retrieval and intelligent response"""
+        # Import datetime at the beginning
+        import re
+        from datetime import datetime, timedelta
+        
         start_time = datetime.now()  # Capture start time for latency calculation
         print(f"\n💭 Processing your question...")
         
         # Store user message in episodic
         self.add_chat_message("user", message)
         print(f"   ✓ Question stored in EPISODIC → super_chat_messages")
-        
-        # Check if asking about specific time/conversation
-        import re
-        from datetime import datetime, timedelta
         
         time_patterns = [
             r'(\d{1,2}:\d{2}\s*(?:am|pm))',  # 7:40pm, 7:40 pm
