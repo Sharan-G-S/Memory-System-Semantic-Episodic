@@ -172,6 +172,10 @@ class ContextOptimizer:
         print(f"   └─ Final: {len(contexts)} contexts\n")
         
         # Update final stats
+        # Step 6: Final token limit enforcement
+        contexts = self._enforce_token_limit(contexts, stats)
+        
+        # Update final stats
         stats['final_count'] = len(contexts)
         stats['final_tokens'] = self._estimate_tokens(contexts)
         stats['reduction_percentage'] = (
@@ -184,18 +188,6 @@ class ContextOptimizer:
         print(f"   ├─ Tokens: {stats['original_tokens']} → {stats['final_tokens']}")
         print(f"   └─ Contexts: {stats['original_count']} → {stats['final_count']}")
         print(f"{'='*70}\n")
-        
-        return contexts, stats
-        
-        # Step 6: Final token limit enforcement
-        contexts = self._enforce_token_limit(contexts, stats)
-        
-        # Update final stats
-        stats['final_count'] = len(contexts)
-        stats['final_tokens'] = self._estimate_tokens(contexts)
-        stats['reduction_percentage'] = (
-            100 * (1 - stats['final_tokens'] / max(stats['original_tokens'], 1))
-        )
         
         return contexts, stats
     
@@ -320,42 +312,28 @@ class ContextOptimizer:
         """Remove duplicate sentences (exact text + semantic meaning)"""
         import re
         
-        # Helper function to split text into clauses
+        # Helper function to split text into complete paragraphs/lines
         def split_into_clauses(text: str) -> List[str]:
-            """Split text into analyzable clauses (lines, sentences, and compound clauses)"""
+            """Split text into complete paragraphs (keep full context together)"""
             clauses = []
             
-            # First split by newlines
+            # Split only by double newlines (paragraphs) or single newlines
+            # This keeps complete thoughts together without splitting by punctuation
             lines = text.strip().split('\n')
             
             for line in lines:
                 line = line.strip()
-                if not line:
-                    continue
-                
-                # Split by sentence delimiters (. ! ?)
-                sentences = re.split(r'[.!?]+\s*', line)
-                
-                for sentence in sentences:
-                    sentence = sentence.strip()
-                    if not sentence:
-                        continue
-                    
-                    # Split compound sentences by conjunctions (and, or, but)
-                    # This catches: "My name is Sharan and Sharan is my name"
-                    parts = re.split(r'\s+(?:and|or|but)\s+', sentence, flags=re.IGNORECASE)
-                    
-                    for part in parts:
-                        part = part.strip()
-                        if len(part) > 5:  # Minimum meaningful clause length
-                            clauses.append(part)
+                if len(line) > 5:  # Minimum meaningful clause length
+                    # Keep the entire line/paragraph as one complete clause
+                    # Don't split by sentence delimiters or conjunctions
+                    clauses.append(line)
             
             return clauses
         
         # Get all clauses from text
         clauses = split_into_clauses(text)
         
-        print(f"   📝 Split into {len(clauses)} clauses: {clauses[:5]}")  # Debug
+        print(f"   📝 Split into {len(clauses)} complete paragraphs: {clauses[:3]}")  # Debug
         
         if len(clauses) == 0:
             return text
@@ -365,7 +343,7 @@ class ContextOptimizer:
         seen_embeddings = []
         unique_clauses = []
         duplicates_in_text = 0
-        semantic_threshold = 0.88  # 88% similarity = semantic duplicate (slightly lower for clauses)
+        semantic_threshold = 0.85  # 85% similarity = semantic duplicate (for complete paragraphs)
         
         for clause in clauses:
             # 1. Check exact duplicates (normalized)
@@ -408,16 +386,85 @@ class ContextOptimizer:
         if duplicates_in_text > 0:
             stats['duplicates_removed'] += duplicates_in_text
         
+        # Post-processing: Consolidate redundant information within paragraphs
+        consolidated_clauses = []
+        for clause in unique_clauses:
+            # Check if this clause contains redundant repetition
+            consolidated = self._consolidate_redundancy(clause)
+            consolidated_clauses.append(consolidated)
+        
         # Rejoin clauses intelligently
-        if unique_clauses:
+        if consolidated_clauses:
             # If original had newlines, preserve structure
             if '\n' in text:
-                return '\n'.join(unique_clauses)
+                return '\n'.join(consolidated_clauses)
             else:
                 # Otherwise join as sentence
-                return '. '.join(unique_clauses) + ('.' if not text.strip().endswith(('.', '!', '?')) else '')
+                return '. '.join(consolidated_clauses) + ('.' if not text.strip().endswith(('.', '!', '?')) else '')
         
         return text
+    
+    def _consolidate_redundancy(self, text: str) -> str:
+        """
+        Consolidate redundant information within a single text block
+        Example: "my favourite colour is red. red is my favourite colour." 
+        → "User's favourite colour is Red."
+        """
+        import re
+        
+        # Split by sentence delimiters to check for redundancy
+        sentences = re.split(r'[.!?]+\s*', text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        if len(sentences) <= 1:
+            return text  # No consolidation needed
+        
+        # Check if sentences are semantically similar (redundant)
+        if self.embedding_service and len(sentences) >= 2:
+            try:
+                embeddings = [self.embedding_service.get_embedding(s) for s in sentences]
+                
+                # Check similarity between first and second sentence
+                similarity = self._cosine_similarity(embeddings[0], embeddings[1])
+                
+                # If very similar (>90%), they're saying the same thing
+                if similarity > 0.90:
+                    # Consolidate: extract key information and create cleaner version
+                    consolidated = self._extract_key_fact(sentences[0], sentences[1])
+                    print(f"   💡 Consolidated: '{text[:60]}...' → '{consolidated}'")
+                    return consolidated
+            except:
+                pass
+        
+        # No consolidation possible, return original
+        return text
+    
+    def _extract_key_fact(self, sentence1: str, sentence2: str) -> str:
+        """
+        Extract key fact from redundant sentences
+        Example: "my favourite colour is red" + "red is my favourite colour"
+        → "User's favourite colour is Red."
+        """
+        import re
+        
+        # Common patterns to extract
+        combined = f"{sentence1.lower()} {sentence2.lower()}"
+        
+        # Pattern 1: "my X is Y" or "Y is my X"
+        patterns = [
+            (r'my\s+(\w+(?:\s+\w+)?)\s+is\s+(\w+)', lambda m: f"User's {m.group(1)} is {m.group(2).capitalize()}."),
+            (r'my\s+name\s+is\s+(\w+)', lambda m: f"User's name is {m.group(1).capitalize()}."),
+            (r'i\s+(?:am|work)\s+(?:a|an)?\s*(\w+(?:\s+\w+)?)', lambda m: f"User is {m.group(1)}."),
+            (r'i\s+like\s+(\w+(?:\s+\w+)?)', lambda m: f"User likes {m.group(1)}."),
+        ]
+        
+        for pattern, formatter in patterns:
+            match = re.search(pattern, combined)
+            if match:
+                return formatter(match)
+        
+        # Fallback: return first sentence (cleaned)
+        return sentence1.strip().capitalize() + ('.' if not sentence1.endswith('.') else '')
     
     def _remove_similar_duplicates(
         self,

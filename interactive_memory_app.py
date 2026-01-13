@@ -402,22 +402,25 @@ class InteractiveMemorySystem:
         if self.enable_optimization and self.context_optimizer:
             print(f"\n🎯 Step 1: OPTIMIZING INPUT BEFORE STORAGE")
             print(f"   ├─ Original length: {len(text)} chars (~{len(text) // 4} tokens)")
-            print(f"   └─ Running optimization pipeline...\n")
+            print(f"   └─ Running consolidation (deduplication only)...\n")
             
-            contexts_to_optimize = [{"content": text, "score": 1.0}]
-            optimized_contexts, opt_stats = self.context_optimizer.optimize(
-                contexts=contexts_to_optimize,
-                query=text[:100]  # Use first part as query
-            )
-            
-            if optimized_contexts:
-                optimized_text = optimized_contexts[0]['content']
-                print(f"\n   ✅ Optimization Results:")
-                print(f"   ├─ Optimized length: {len(optimized_text)} chars (~{len(optimized_text) // 4} tokens)")
-                print(f"   ├─ Duplicates removed: {opt_stats['duplicates_removed']}")
-                print(f"   ├─ Low-entropy filtered: {opt_stats['low_entropy_removed']}")
-                print(f"   ├─ Reduction: {opt_stats['reduction_percentage']:.1f}%")
-                print(f"   └─ ✓ Saved {opt_stats['reduction_percentage']:.1f}% storage space")
+            # Use direct consolidation without re-ranking
+            try:
+                stats = {'duplicates_removed': 0}
+                optimized_text = self.context_optimizer._remove_duplicate_sentences(text, stats)
+                
+                if optimized_text != text:
+                    reduction_pct = 100 * (1 - len(optimized_text) / len(text))
+                    print(f"   ✅ Consolidation Results:")
+                    print(f"   ├─ Optimized length: {len(optimized_text)} chars (~{len(optimized_text) // 4} tokens)")
+                    print(f"   ├─ Duplicates removed: {stats['duplicates_removed']}")
+                    print(f"   ├─ Reduction: {reduction_pct:.1f}%")
+                    print(f"   └─ ✓ Saved {reduction_pct:.1f}% storage space")
+                else:
+                    print(f"   ℹ️  No optimization needed - content is already concise")
+            except Exception as e:
+                print(f"   ⚠️  Optimization failed: {e}, storing original")
+                optimized_text = text
         else:
             print(f"   ⚠️  Optimization disabled - storing as-is")
         
@@ -508,22 +511,25 @@ class InteractiveMemorySystem:
         if self.enable_optimization and self.context_optimizer:
             print(f"\n🎯 Step 1: OPTIMIZING INPUT BEFORE STORAGE")
             print(f"   ├─ Original length: {len(content)} chars (~{len(content) // 4} tokens)")
-            print(f"   └─ Running optimization pipeline...\n")
+            print(f"   └─ Running consolidation (deduplication only)...\n")
             
-            contexts_to_optimize = [{"content": content, "score": 1.0}]
-            optimized_contexts, opt_stats = self.context_optimizer.optimize(
-                contexts=contexts_to_optimize,
-                query=content[:100]  # Use first part as query
-            )
-            
-            if optimized_contexts:
-                optimized_content = optimized_contexts[0]['content']
-                print(f"\n   ✅ Optimization Results:")
-                print(f"   ├─ Optimized length: {len(optimized_content)} chars (~{len(optimized_content) // 4} tokens)")
-                print(f"   ├─ Duplicates removed: {opt_stats['duplicates_removed']}")
-                print(f"   ├─ Low-entropy filtered: {opt_stats['low_entropy_removed']}")
-                print(f"   ├─ Reduction: {opt_stats['reduction_percentage']:.1f}%")
-                print(f"   └─ ✓ Saved {opt_stats['reduction_percentage']:.1f}% storage space")
+            # Use direct consolidation without re-ranking (re-ranking is for retrieval, not storage)
+            try:
+                stats = {'duplicates_removed': 0}
+                optimized_content = self.context_optimizer._remove_duplicate_sentences(content, stats)
+                
+                if optimized_content != content:
+                    reduction_pct = 100 * (1 - len(optimized_content) / len(content))
+                    print(f"   ✅ Consolidation Results:")
+                    print(f"   ├─ Optimized length: {len(optimized_content)} chars (~{len(optimized_content) // 4} tokens)")
+                    print(f"   ├─ Duplicates removed: {stats['duplicates_removed']}")
+                    print(f"   ├─ Reduction: {reduction_pct:.1f}%")
+                    print(f"   └─ ✓ Saved {reduction_pct:.1f}% storage space")
+                else:
+                    print(f"   ℹ️  No optimization needed - content is already concise")
+            except Exception as e:
+                print(f"   ⚠️  Optimization failed: {e}, storing original")
+                optimized_content = content
         else:
             print(f"   ⚠️  Optimization disabled - storing as-is")
         
@@ -587,13 +593,34 @@ class InteractiveMemorySystem:
     
     def add_chat_message(self, role: str, content: str):
         """Add message to episodic memory and Redis temporary cache (user messages only)"""
+        
+        # Optimize content before storage (for user messages only)
+        optimized_content = content
+        if role == 'user' and self.enable_optimization and self.context_optimizer:
+            try:
+                # Apply ONLY deduplication/consolidation, not full optimization pipeline
+                # This preserves the content while removing redundancy
+                optimized_content = self.context_optimizer._remove_duplicate_sentences(
+                    content, 
+                    {'duplicates_removed': 0}
+                )
+                
+                if optimized_content != content:
+                    reduction_pct = 100 * (1 - len(optimized_content) / len(content))
+                    print(f"   💡 Message optimized: {reduction_pct:.1f}% reduction")
+                    print(f"      Original: {content[:60]}...")
+                    print(f"      Optimized: {optimized_content[:60]}...")
+            except Exception as e:
+                print(f"   ⚠️  Optimization failed: {e}, storing original")
+                optimized_content = content
+        
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO super_chat_messages 
             (super_chat_id, role, content)
             VALUES (%s, %s, %s)
             RETURNING created_at
-        """, (self.current_chat_id, role, content))
+        """, (self.current_chat_id, role, optimized_content))  # Store optimized content
         
         created_at = cur.fetchone()['created_at']
         self.conn.commit()
@@ -607,16 +634,16 @@ class InteractiveMemorySystem:
             existing_messages = self.redis_client.lrange(cache_key, -1, -1)
             if existing_messages:
                 last_msg = json.loads(existing_messages[0])
-                if last_msg.get('content') == content:
+                if last_msg.get('content') == optimized_content:
                     # Skip duplicate - already stored
                     return
             
             msg_data = json.dumps({
                 'role': role,
-                'content': content,  # This is now optimized content
+                'content': optimized_content,  # Store the actually optimized content
                 'created_at': created_at.isoformat(),
                 'source': 'TEMP_MEMORY',
-                'optimized': True  # Flag to indicate this is optimized
+                'optimized': optimized_content != content  # True only if actually optimized
             })
             
             # Add to end of list
@@ -1024,13 +1051,25 @@ class InteractiveMemorySystem:
     def run(self):
         """Enhanced interactive CLI with Redis temporary memory cache"""
         print("\n" + "="*70)
-        print("🧠 INTERACTIVE MEMORY SYSTEM - Layer-Aware Storage & Retrieval")
+        print("🧠 INTERACTIVE MEMORY SYSTEM - Advanced Features Enabled")
         print("="*70)
         print("\n📊 Memory Architecture:")
         redis_status = "Redis connected ✓" if self.redis_client else "Redis unavailable ⚠️"
         print(f"  ⚡ TEMPORARY CACHE: Last 15 chats ({redis_status})")
         print("  📚 SEMANTIC LAYER:  user_persona, knowledge_base (long-term facts)")
         print("  📅 EPISODIC LAYER:  super_chat_messages, episodes (temporal events)")
+        
+        print("\n🚀 Advanced Features:")
+        print(f"  ✅ Hybrid Search (RRF): Vector + BM25 fusion with Reciprocal Rank Fusion")
+        print(f"  ✅ Context Optimization: 7-stage pipeline (dedup, diversity, NLI, entropy, compression, rerank, token limit)")
+        print(f"  ✅ RAG Model Selection: Historical performance learning with database tracking")
+        if self.biencoder_enabled:
+            print(f"  ✅ Bi-Encoder Reranking: FAISS-based semantic reranking (all-MiniLM-L6-v2)")
+        else:
+            print(f"  ⚠️  Bi-Encoder Reranking: Disabled")
+        print(f"  ✅ Metadata Filtering: 10+ filter types (category, tags, time, importance)")
+        print(f"  ✅ Redis Integration: Unified namespace (episodic:*, semantic:*, temp_memory:*)")
+        
         print("\n💡 Commands:")
         print("  <text>              → Auto-store in appropriate layer(s)")
         print("  search <query>      → Hybrid search across ALL layers + temp cache")
@@ -1343,6 +1382,7 @@ class InteractiveMemorySystem:
     
     def chat_with_context(self, message: str):
         """Chat with full context retrieval and intelligent response"""
+        start_time = datetime.now()  # Capture start time for latency calculation
         print(f"\n💭 Processing your question...")
         
         # Store user message in episodic
@@ -1525,38 +1565,25 @@ class InteractiveMemorySystem:
         
         # Build context
         full_context = "\n".join(context_parts)
-        print(f"{'='*70}")
-        print(f"🤖 STEP 4: MODEL SELECTION & GENERATION")
-        print(f"{'='*70}")
         
-        # Select best model using RAG if available
-        rag_insights = {}
-        if self.groq_client:
-            if self.model_selector:
-                # Use RAG-enhanced model selection
-                model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
-                    task_type="chat",
-                    query_context=message,
-                    user_id=self.user_id,
-                    verbose=True
-                )
-            else:
-                # Fallback to default selection
-                model_name, model_reason = select_model_for_task("chat")
-                print(f"Selected Model: {model_name}")
-                print(f"Reason: {model_reason}")
-            
-            print(f"Context size: {len(full_context)} chars (~{len(full_context) // 4} tokens)")
-            print(f"{'='*70}")
+        # Move to Step 3: Context Optimization (before model selection)
         
         print(f"\n{'='*70}")
-        print(f"🎯 STEP 3: CONTEXT OPTIMIZATION")
+        print(f"🎯 STEP 3: CONTEXT OPTIMIZATION (7-STAGE PIPELINE)")
         print(f"{'='*70}")
         initial_tokens = len(full_context) // 4  # Rough token estimate
         print(f"Initial context: {len(full_context)} chars (~{initial_tokens} tokens)\n")
         
         if self.enable_optimization and self.context_optimizer:
-            print(f"🔄 Running optimization pipeline...")
+            print(f"🔄 Running 7-stage optimization pipeline:")
+            print(f"   1️⃣ Deduplication (exact + semantic at 85% threshold)")
+            print(f"   2️⃣ Diversity Sampling (max 3 per source)")
+            print(f"   3️⃣ Contradiction Detection (NLI-based)")
+            print(f"   4️⃣ Entropy Filtering (40% threshold)")
+            print(f"   5️⃣ Context-Aware Compression")
+            print(f"   6️⃣ Adaptive Re-ranking (iterative threshold)")
+            print(f"   7️⃣ Token Limit Enforcement (max 4000 tokens)\n")
+            
             contexts_to_optimize = [{"content": full_context, "score": 1.0}]
             optimized_contexts, opt_stats = self.context_optimizer.optimize(
                 contexts=contexts_to_optimize,
@@ -1569,30 +1596,57 @@ class InteractiveMemorySystem:
                 print(f"   ├─ Original: {opt_stats['original_tokens']} tokens")
                 print(f"   ├─ Optimized: {opt_stats['final_tokens']} tokens")
                 print(f"   ├─ Reduction: {opt_stats['reduction_percentage']:.1f}%")
-                print(f"   ├─ Duplicates removed: {opt_stats['duplicates_removed']}")
-                print(f"   ├─ Diversity filtered: {opt_stats['diversity_filtered']}")
-                print(f"   ├─ Contradictions detected: {opt_stats['contradictions_detected']}")
-                print(f"   ├─ Low entropy removed: {opt_stats['low_entropy_removed']}")
-                print(f"   ├─ Compressed contexts: {opt_stats['compressed_count']}")
-                print(f"   ├─ Iterations: {opt_stats['iterations']}")
+                print(f"   ├─ Stage Results:")
+                print(f"   │  ├─ 1️⃣ Duplicates removed: {opt_stats['duplicates_removed']}")
+                print(f"   │  ├─ 2️⃣ Diversity filtered: {opt_stats['diversity_filtered']}")
+                print(f"   │  ├─ 3️⃣ Contradictions detected: {opt_stats['contradictions_detected']}")
+                print(f"   │  ├─ 4️⃣ Low entropy removed: {opt_stats['low_entropy_removed']}")
+                print(f"   │  ├─ 5️⃣ Compressed contexts: {opt_stats['compressed_count']}")
+                print(f"   │  ├─ 6️⃣ Re-ranking iterations: {opt_stats['iterations']}")
                 if opt_stats.get('adaptive_threshold_used'):
-                    print(f"   ├─ Adaptive threshold: {opt_stats['adaptive_threshold_used']:.3f}")
-                print(f"   └─ Final contexts: {opt_stats['final_count']}")
-                print(f"{'='*70}\n")
-        else:
-            print(f"⚠️  Optimization disabled - using context as-is")
-            print(f"{'='*70}\n")
-            print(f"   ℹ️  Using assembled context directly (already retrieved from DB/Redis)")
-        
-        # Generate response
-        start_time = datetime.now()
-        response_success = True
+                    print(f"   │  │  └─ Adaptive threshold: {opt_stats['adaptive_threshold_used']:.3f}")
+                print(f"   │  └─ 7️⃣ Final contexts: {opt_stats['final_count']}")
+                print(f"   └─ ✓ Context optimized and ready for LLM")
+        print(f"\n{'='*70}")
+        print(f"🤖 STEP 4: RAG MODEL SELECTION & LLM GENERATION")
+        print(f"{'='*70}")
         
         if self.groq_client:
-            # Select best model for chat task
-            model_name, model_reason = select_model_for_task("chat")
-            print(f"\n🤖 Model Selection: {model_name}")
-            print(f"   └─ {model_reason}\n")
+            # Select best model using RAG-enhanced selection
+            rag_insights = {}
+            if self.model_selector:
+                print(f"🎯 Using RAG-Enhanced Model Selection...")
+                print(f"   ├─ Analyzing: Task type, query context, user history")
+                print(f"   ├─ Retrieving: Historical performance data")
+                print(f"   └─ Deciding: Best model based on learned patterns\n")
+                
+                model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
+                    task_type="chat",
+                    query_context=message,
+                    user_id=self.user_id,
+                    verbose=True
+                )
+                
+                print(f"\n✅ Model Selected: {model_name}")
+                print(f"   ├─ Reason: {model_reason}")
+                if rag_insights:
+                    if 'cache_hit' in rag_insights:
+                        print(f"   ├─ Cache: {'Hit ✓' if rag_insights['cache_hit'] else 'Miss'}")
+                    if 'similar_contexts' in rag_insights:
+                        print(f"   ├─ Similar contexts found: {rag_insights['similar_contexts']}")
+                    if 'avg_success_rate' in rag_insights:
+                        print(f"   └─ Historical success rate: {rag_insights['avg_success_rate']:.1f}%")
+            else:
+                # Fallback to simple task-based selection
+                model_name, model_reason = select_model_for_task("chat")
+                print(f"✅ Model Selected: {model_name}")
+                print(f"   └─ Reason: {model_reason}")
+            
+            print(f"\n📊 Context Details:")
+            print(f"   ├─ Size: {len(full_context)} chars (~{len(full_context) // 4} tokens)")
+            print(f"   ├─ Model: {model_name}")
+            print(f"   └─ Temperature: 0.7, Max tokens: 500")
+            print(f"{'='*70}\n")
             
             try:
                 response = self.groq_client.chat.completions.create(
