@@ -346,6 +346,3 @@ This is a demonstration project showcasing dual-layer memory architecture with A
 
 MIT License - See LICENSE file for details
 
----
-
-**Built with**: Python, PostgreSQL, pgvector, Groq AI (llama-3.3-70b-versatile)
