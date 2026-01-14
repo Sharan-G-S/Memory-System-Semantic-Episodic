@@ -29,7 +29,7 @@ python3 interactive_memory_app.py
 
 ## 📋 Features
 
-✅ **Context Optimization System (NEW!)**
+✅ **Context Optimization System **
 - **30-50% token reduction**: Minimize LLM costs and context window usage
 - **5-stage pipeline**: Deduplication → Entropy filtering → Compression → Re-ranking → Token limiting
 - **Balanced profile**: Optimal efficiency and quality for most use cases
