@@ -74,7 +74,8 @@ class ContextOptimizer:
         self,
         contexts: List[Dict[str, Any]],
         query: str,
-        embeddings: Optional[List[np.ndarray]] = None
+        embeddings: Optional[List[np.ndarray]] = None,
+        verbose: bool = True
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Main optimization pipeline with clear sequential steps
@@ -115,61 +116,78 @@ class ContextOptimizer:
         if not contexts:
             return [], stats
         
-        print(f"\n{'='*70}")
-        print(f"🎯 CONTEXT OPTIMIZATION PIPELINE")
-        print(f"{'='*70}")
-        print(f"Input: {len(contexts)} contexts, ~{stats['original_tokens']} tokens")
-        print(f"Target: ≤{self.max_context_tokens} tokens\n")
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"🎯 CONTEXT OPTIMIZATION PIPELINE")
+            print(f"{'='*70}")
+            print(f"Input: {len(contexts)} contexts, ~{stats['original_tokens']} tokens")
+            print(f"Target: ≤{self.max_context_tokens} tokens\n")
             
         # STEP 1: DEDUPLICATION
-        print(f"📋 STEP 1/7: DEDUPLICATION")
-        print(f"   ├─ Removing exact duplicates...")
-        contexts = self._remove_exact_duplicates(contexts, stats)
-        print(f"   ├─ Removing semantic duplicates (threshold: {self.similarity_threshold:.2f})...")
+        if verbose:
+            print(f"📋 STEP 1/7: DEDUPLICATION")
+            print(f"   ├─ Removing exact duplicates...")
+        contexts = self._remove_exact_duplicates(contexts, stats, verbose)
+        if verbose:
+            print(f"   ├─ Removing semantic duplicates (threshold: {self.similarity_threshold:.2f})...")
         contexts = self._remove_similar_duplicates(contexts, embeddings, stats)
-        print(f"   └─ Remaining: {len(contexts)} contexts\n")
+        if verbose:
+            print(f"   └─ Remaining: {len(contexts)} contexts\n")
         
         # STEP 2: DIVERSITY SAMPLING
-        print(f"🎲 STEP 2/7: DIVERSITY SAMPLING")
-        print(f"   ├─ Ensuring balanced source representation (max {self.max_per_source} per source)...")
+        if verbose:
+            print(f"🎲 STEP 2/7: DIVERSITY SAMPLING")
+            print(f"   ├─ Ensuring balanced source representation (max {self.max_per_source} per source)...")
         contexts = self._ensure_source_diversity(contexts, stats)
-        print(f"   └─ Remaining: {len(contexts)} contexts\n")
+        if verbose:
+            print(f"   └─ Remaining: {len(contexts)} contexts\n")
         
         # STEP 3: CONTRADICTION DETECTION
         if self.enable_contradiction_detection:
-            print(f"⚠️  STEP 3/7: CONTRADICTION DETECTION")
-            print(f"   ├─ Analyzing for conflicting information...")
+            if verbose:
+                print(f"⚠️  STEP 3/7: CONTRADICTION DETECTION")
+                print(f"   ├─ Analyzing for conflicting information...")
             contexts = self._detect_contradictions(contexts, stats)
-            print(f"   └─ Contradictions flagged: {stats['contradictions_detected']}\n")
+            if verbose:
+                print(f"   └─ Contradictions flagged: {stats['contradictions_detected']}\n")
         else:
-            print(f"⚠️  STEP 3/7: CONTRADICTION DETECTION [DISABLED]\n")
+            if verbose:
+                print(f"⚠️  STEP 3/7: CONTRADICTION DETECTION [DISABLED]\n")
         
         # STEP 4: ENTROPY FILTERING
-        print(f"📊 STEP 4/7: ENTROPY FILTERING")
-        print(f"   ├─ Filtering low-information content (threshold: {self.entropy_threshold:.2f})...")
+        if verbose:
+            print(f"📊 STEP 4/7: ENTROPY FILTERING")
+            print(f"   ├─ Filtering low-information content (threshold: {self.entropy_threshold:.2f})...")
         contexts = self._filter_low_entropy(contexts, stats)
-        print(f"   └─ Remaining: {len(contexts)} contexts\n")
+        if verbose:
+            print(f"   └─ Remaining: {len(contexts)} contexts\n")
         
         # STEP 5: CONTEXT-AWARE COMPRESSION
-        print(f"🗜️  STEP 5/7: CONTEXT-AWARE COMPRESSION")
-        print(f"   ├─ Extracting relevant content while preserving context...")
+        if verbose:
+            print(f"🗜️  STEP 5/7: CONTEXT-AWARE COMPRESSION")
+            print(f"   ├─ Extracting relevant content while preserving context...")
         contexts = self._compress_contexts(contexts, query, stats)
-        print(f"   └─ Compressed: {stats['compressed_count']} contexts\n")
+        if verbose:
+            print(f"   └─ Compressed: {stats['compressed_count']} contexts\n")
         
         # STEP 6: ADAPTIVE RE-RANKING
-        print(f"🔄 STEP 6/7: ADAPTIVE RE-RANKING")
-        if self.enable_adaptive_threshold:
-            print(f"   ├─ Using adaptive threshold (base: {self.rerank_threshold:.2f})...")
-        else:
-            print(f"   ├─ Using static threshold: {self.rerank_threshold:.2f}...")
-        contexts = self._rerank_with_verification(contexts, query, stats)
-        print(f"   └─ Remaining: {len(contexts)} contexts after {stats['iterations']} iteration(s)\n")
+        if verbose:
+            print(f"🔄 STEP 6/7: ADAPTIVE RE-RANKING")
+            if self.enable_adaptive_threshold:
+                print(f"   ├─ Using adaptive threshold (base: {self.rerank_threshold:.2f})...")
+            else:
+                print(f"   ├─ Using static threshold: {self.rerank_threshold:.2f}...")
+        contexts = self._rerank_with_verification(contexts, query, stats, verbose)
+        if verbose:
+            print(f"   └─ Remaining: {len(contexts)} contexts after {stats['iterations']} iteration(s)\n")
         
         # STEP 7: TOKEN LIMIT ENFORCEMENT
-        print(f"✂️  STEP 7/7: TOKEN LIMIT ENFORCEMENT")
-        print(f"   ├─ Enforcing max {self.max_context_tokens} tokens...")
+        if verbose:
+            print(f"✂️  STEP 7/7: TOKEN LIMIT ENFORCEMENT")
+            print(f"   ├─ Enforcing max {self.max_context_tokens} tokens...")
         contexts = self._enforce_token_limit(contexts, stats)
-        print(f"   └─ Final: {len(contexts)} contexts\n")
+        if verbose:
+            print(f"   └─ Final: {len(contexts)} contexts\n")
         
         # Update final stats
         # Step 6: Final token limit enforcement
@@ -182,19 +200,21 @@ class ContextOptimizer:
             100 * (1 - stats['final_tokens'] / max(stats['original_tokens'], 1))
         )
         
-        print(f"{'='*70}")
-        print(f"✅ OPTIMIZATION COMPLETE")
-        print(f"   ├─ Reduction: {stats['reduction_percentage']:.1f}%")
-        print(f"   ├─ Tokens: {stats['original_tokens']} → {stats['final_tokens']}")
-        print(f"   └─ Contexts: {stats['original_count']} → {stats['final_count']}")
-        print(f"{'='*70}\n")
+        if verbose:
+            print(f"{'='*70}")
+            print(f"✅ OPTIMIZATION COMPLETE")
+            print(f"   ├─ Reduction: {stats['reduction_percentage']:.1f}%")
+            print(f"   ├─ Tokens: {stats['original_tokens']} → {stats['final_tokens']}")
+            print(f"   └─ Contexts: {stats['original_count']} → {stats['final_count']}")
+            print(f"{'='*70}\n")
         
         return contexts, stats
     
     def _remove_exact_duplicates(
         self,
         contexts: List[Dict[str, Any]],
-        stats: Dict[str, Any]
+        stats: Dict[str, Any],
+        verbose: bool = True
     ) -> List[Dict[str, Any]]:
         """Remove exact duplicate content using hash-based deduplication"""
         seen_hashes = set()
@@ -204,7 +224,7 @@ class ContextOptimizer:
             content = self._get_content(ctx)
             
             # FIRST: Remove duplicate sentences within the content itself
-            content = self._remove_duplicate_sentences(content, stats)
+            content = self._remove_duplicate_sentences(content, stats, verbose)
             
             # THEN: Check for duplicate contexts
             content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
@@ -308,9 +328,19 @@ class ContextOptimizer:
         
         return contexts
     
-    def _remove_duplicate_sentences(self, text: str, stats: Dict[str, Any]) -> str:
+    def _remove_duplicate_sentences(self, text: str, stats: Dict[str, Any], verbose: bool = True) -> str:
         """Remove duplicate sentences (exact text + semantic meaning)"""
         import re
+        
+        # Helper function to normalize chat messages (remove timestamps for comparison)
+        def normalize_chat_message(line: str) -> str:
+            """Remove timestamp and formatting to get pure content"""
+            # Pattern: "- [Date Time] user: content" or "- [Date Time] assistant: content"
+            chat_pattern = r'^-\s*\[.*?\]\s*(?:user|assistant):\s*(.+)$'
+            match = re.match(chat_pattern, line, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+            return line.strip()
         
         # Helper function to split text into complete paragraphs/lines
         def split_into_clauses(text: str) -> List[str]:
@@ -333,7 +363,8 @@ class ContextOptimizer:
         # Get all clauses from text
         clauses = split_into_clauses(text)
         
-        print(f"   📝 Split into {len(clauses)} complete paragraphs: {clauses[:3]}")  # Debug
+        if verbose:
+            print(f"   📝 Split into {len(clauses)} complete paragraphs: {clauses[:3]}")  # Debug
         
         if len(clauses) == 0:
             return text
@@ -346,40 +377,48 @@ class ContextOptimizer:
         semantic_threshold = 0.85  # 85% similarity = semantic duplicate (for complete paragraphs)
         
         for clause in clauses:
-            # 1. Check exact duplicates (normalized)
-            clause_normalized = re.sub(r'[.!?,;:]+$', '', clause).lower().strip()
+            # Normalize chat messages to extract pure content for comparison
+            normalized_content = normalize_chat_message(clause)
             
-            if clause_normalized in seen_exact:
+            # 1. Check exact duplicates (normalized content without timestamps)
+            content_normalized = re.sub(r'[.!?,;:"\']+$', '', normalized_content).lower().strip()
+            
+            if content_normalized in seen_exact:
                 duplicates_in_text += 1
+                if verbose:
+                    print(f"   🔍 Exact duplicate detected: '{clause[:60]}...'")
                 continue
             
             # 2. Check semantic duplicates (meaning-based)
             is_semantic_duplicate = False
             if self.embedding_service and len(seen_embeddings) > 0:
                 try:
-                    current_embedding = self.embedding_service.get_embedding(clause)
+                    # Use normalized content for embedding to ignore timestamps
+                    current_embedding = self.embedding_service.get_embedding(normalized_content)
                     
                     # Compare with existing clauses
-                    for existing_emb, existing_text in seen_embeddings:
+                    for existing_emb, existing_text, original_clause in seen_embeddings:
                         similarity = self._cosine_similarity(current_embedding, existing_emb)
                         if similarity >= semantic_threshold:
                             duplicates_in_text += 1
                             is_semantic_duplicate = True
-                            print(f"   🔍 Semantic duplicate detected: '{clause}' ≈ '{existing_text}' (similarity: {similarity:.2%})")
+                            if verbose:
+                                print(f"   🔍 Semantic duplicate detected: '{clause[:60]}...' ≈ '{original_clause[:60]}...' (similarity: {similarity:.2%})")
                             break
                     
                     if not is_semantic_duplicate:
-                        seen_embeddings.append((current_embedding, clause))
-                        seen_exact.add(clause_normalized)
+                        seen_embeddings.append((current_embedding, normalized_content, clause))
+                        seen_exact.add(content_normalized)
                         unique_clauses.append(clause)
                 except Exception as e:
                     # Fallback to exact matching if embedding fails
-                    print(f"   ⚠️  Embedding failed for '{clause[:50]}': {e}")
-                    seen_exact.add(clause_normalized)
+                    if verbose:
+                        print(f"   ⚠️  Embedding failed for '{clause[:50]}': {e}")
+                    seen_exact.add(content_normalized)
                     unique_clauses.append(clause)
             else:
                 # No embedding service, use exact matching only
-                seen_exact.add(clause_normalized)
+                seen_exact.add(content_normalized)
                 unique_clauses.append(clause)
         
         # Update stats
@@ -569,30 +608,47 @@ class ContextOptimizer:
         
         Strategy:
         - High score variance → Lower threshold (diverse quality)
-        - Low score variance → Higher threshold (consistent quality)
+        - Low score variance → Use median-based threshold
+        - Never set threshold above max score (would filter everything)
         - Uses median + percentile analysis for robustness
         """
         if len(scores) < 3:
-            return base_threshold
+            return min(base_threshold, max(scores) * 0.7) if scores else base_threshold
         
         scores_sorted = sorted(scores, reverse=True)
+        max_score = scores_sorted[0]
         median = scores_sorted[len(scores) // 2]
         q75 = scores_sorted[len(scores) // 4]
         q25 = scores_sorted[3 * len(scores) // 4] if len(scores) >= 4 else scores_sorted[-1]
+        mean_score = sum(scores) / len(scores)
         
         # Calculate interquartile range (IQR)
         iqr = q75 - q25
         
-        # Adaptive threshold based on distribution
-        if iqr > 0.3:  # High variance
-            adaptive_threshold = max(base_threshold - 0.1, median * 0.8)
-        elif iqr < 0.15:  # Low variance
-            adaptive_threshold = min(base_threshold + 0.05, median * 0.95)
-        else:  # Medium variance
-            adaptive_threshold = (base_threshold + median) / 2
+        # CRITICAL: Never set threshold above the max score
+        # This prevents filtering out ALL contexts
+        safe_max_threshold = max_score * 0.85
         
-        # Clamp to reasonable range
-        adaptive_threshold = max(0.5, min(0.8, adaptive_threshold))
+        # Adaptive threshold based on distribution
+        if iqr > 0.3:  # High variance - be more lenient
+            adaptive_threshold = max(median * 0.5, mean_score * 0.6, 0.25)
+        elif iqr < 0.15:  # Low variance - use median-based
+            adaptive_threshold = max(median * 0.7, mean_score * 0.7, 0.30)
+        else:  # Medium variance
+            adaptive_threshold = max(median * 0.6, mean_score * 0.65, 0.28)
+        
+        # CRITICAL FIX: If all scores are very low (< 0.35), use a much lower threshold
+        # This handles cases where relevance scoring gives low scores across the board
+        if max_score < 0.35:
+            # Use a fraction of the max score to ensure something passes
+            adaptive_threshold = min(adaptive_threshold, max_score * 0.7, mean_score * 0.8)
+        
+        # Ensure threshold is never above safe maximum
+        adaptive_threshold = min(adaptive_threshold, safe_max_threshold)
+        
+        # Clamp to reasonable range [0.08, 0.70]
+        # Lower bound of 0.08 allows even low-scored contexts through when necessary
+        adaptive_threshold = max(0.08, min(0.70, adaptive_threshold))
         
         return adaptive_threshold
     
@@ -600,7 +656,8 @@ class ContextOptimizer:
         self,
         contexts: List[Dict[str, Any]],
         query: str,
-        stats: Dict[str, Any]
+        stats: Dict[str, Any],
+        verbose: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Re-rank contexts with adaptive threshold adjustment
@@ -642,15 +699,19 @@ class ContextOptimizer:
             if self.enable_adaptive_threshold:
                 active_threshold = self._calculate_adaptive_threshold(scores, self.rerank_threshold)
                 stats['adaptive_threshold_used'] = active_threshold
-                print(f"\n   🔄 Iteration {iteration}: {len(scored_contexts)} contexts, adaptive threshold: {active_threshold:.3f}")
+                if verbose:
+                    print(f"\n   🔄 Iteration {iteration}: {len(scored_contexts)} contexts, adaptive threshold: {active_threshold:.3f}")
             else:
-                print(f"\n   🔄 Iteration {iteration}: {len(scored_contexts)} contexts, static threshold: {active_threshold:.3f}")
+                if verbose:
+                    print(f"\n   🔄 Iteration {iteration}: {len(scored_contexts)} contexts, static threshold: {active_threshold:.3f}")
             
-            print(f"   ├─ Score range: [{min_score:.3f}, {max_score:.3f}], avg: {avg_score:.3f}")
+            if verbose:
+                print(f"   ├─ Score range: [{min_score:.3f}, {max_score:.3f}], avg: {avg_score:.3f}")
             
             # Check convergence
             if min_score >= active_threshold:
-                print(f"   └─ ✓ Converged - all contexts above threshold")
+                if verbose:
+                    print(f"   └─ ✓ Converged - all contexts above threshold")
                 current_contexts = scored_contexts
                 break
             
@@ -661,18 +722,29 @@ class ContextOptimizer:
             ]
             
             removed = len(scored_contexts) - len(filtered_contexts)
-            print(f"   ├─ Filtered: {removed} contexts below threshold")
+            if verbose:
+                print(f"   ├─ Filtered: {removed} contexts below threshold")
             
-            # Ensure minimum contexts
-            if len(filtered_contexts) < 3 and len(scored_contexts) >= 3:
-                print(f"   ├─ Keeping top 3 to maintain minimum context")
+            # CRITICAL: Ensure minimum contexts are ALWAYS kept
+            # Never filter down to zero contexts
+            if len(filtered_contexts) == 0:
+                # If all filtered out, keep top 5 (or all if less than 5)
+                keep_count = min(5, len(scored_contexts))
+                if verbose:
+                    print(f"   ├─ ⚠️  All filtered! Keeping top {keep_count} contexts to prevent data loss")
+                current_contexts = scored_contexts[:keep_count]
+                break
+            elif len(filtered_contexts) < 3 and len(scored_contexts) >= 3:
+                if verbose:
+                    print(f"   ├─ Keeping top 3 to maintain minimum context")
                 current_contexts = scored_contexts[:3]
                 break
             
             current_contexts = filtered_contexts
             
             if iteration == self.max_iterations:
-                print(f"   └─ Max iterations reached")
+                if verbose:
+                    print(f"   └─ Max iterations reached")
                 
         return current_contexts
     
@@ -852,21 +924,84 @@ class ContextOptimizer:
         return text.strip()
     
     def _calculate_relevance(self, content: str, query: str) -> float:
-        """Calculate relevance score between content and query"""
-        content_words = set(re.findall(r'\w+', content.lower()))
-        query_words = set(re.findall(r'\w+', query.lower()))
+        """Calculate relevance score between content and query using semantic similarity"""
+        content_lower = content.lower()
+        query_lower = query.lower()
+        
+        # CRITICAL: Check for temporal queries (yesterday, last week, date-based)
+        temporal_patterns = [
+            r'yesterday', r'last\s+(week|month|year|day)',
+            r'previous', r'ago', r'recent', r'earlier',
+            r'\d{4}-\d{2}-\d{2}',  # Date formats
+            r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}',  # Month day
+        ]
+        
+        is_temporal_query = any(re.search(pattern, query_lower) for pattern in temporal_patterns)
+        
+        # For temporal queries, check if content has date/time information
+        if is_temporal_query:
+            has_temporal_content = any(re.search(pattern, content_lower) for pattern in temporal_patterns)
+            # Also check for message timestamps
+            has_timestamp = bool(re.search(r'\d{1,2}:\d{2}\s*(am|pm)', content_lower))
+            
+            if has_temporal_content or has_timestamp:
+                # Boost score significantly for temporal matches
+                base_score = 0.85
+            else:
+                base_score = 0.40
+        else:
+            base_score = 0.0
+        
+        # Try semantic similarity if embedding service available
+        if self.embedding_service:
+            try:
+                content_emb = self.embedding_service.get_embedding(content[:1000])  # Limit for performance
+                query_emb = self.embedding_service.get_embedding(query)
+                cosine_sim = self._cosine_similarity(content_emb, query_emb)
+                
+                # CRITICAL: Normalize cosine similarity from [-1, 1] to [0, 1]
+                # This prevents negative scores that cause filtering issues
+                semantic_score = (cosine_sim + 1.0) / 2.0
+                
+                # Combine with base score for temporal queries
+                if is_temporal_query:
+                    return max(semantic_score, base_score)
+                
+                # For general queries, use normalized semantic score
+                # But ensure minimum score of 0.3 for any existing content
+                return max(semantic_score, 0.3)
+            except Exception as e:
+                # Fall back to keyword-based if embedding fails
+                if is_temporal_query:
+                    return base_score
+        
+        # Fallback: Enhanced keyword matching with boosting
+        content_words = set(re.findall(r'\w+', content_lower))
+        query_words = set(re.findall(r'\w+', query_lower))
         
         if not query_words or not content_words:
-            return 0.0
+            return 0.3  # Give base score for existing content
         
-        # Jaccard similarity
+        # Exact phrase match gets high score
+        if query_lower in content_lower:
+            return 0.95
+        
+        # Calculate word overlap
         intersection = len(content_words & query_words)
         union = len(content_words | query_words)
         
         if union == 0:
-            return 0.0
-            
-        return intersection / union
+            return 0.3
+        
+        # Jaccard similarity with boost for high overlap
+        jaccard = intersection / union
+        
+        # Boost score based on match ratio
+        match_ratio = intersection / len(query_words)
+        boosted_score = jaccard * 0.5 + match_ratio * 0.5
+        
+        # Ensure minimum score for any content with some relevance
+        return max(boosted_score, 0.3 if intersection > 0 else 0.1)
     
     def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
         """Truncate text to approximately max_tokens"""

@@ -187,7 +187,7 @@ class ModelSelector:
             # Override if alternative model has significantly better performance
             if best_performer['avg_success_rate'] > 0.85 and best_performer['avg_quality'] > 0.8:
                 selected_model = best_performer['model_name']
-                reason = f"RAG-optimized: {best_performer['reason']} (Success: {best_performer['avg_success_rate']:.1%})"
+                reason = f"RAG-optimized: {best_performer.get('use_case', 'task optimization')} - Best for proven performance (Success: {best_performer['avg_success_rate']:.1%}, Quality: {best_performer['avg_quality']:.1%})"
         
         if verbose:
             print(f"\n🤖 RAG-Enhanced Model Selection: {selected_model}")
@@ -296,7 +296,17 @@ class ModelSelector:
             # Build recommendations
             recommendations = []
             for perf in overall_performance:
-                config = self.MODEL_REGISTRY.get(task_type, self.MODEL_REGISTRY["chat"])
+                # Find the matching model config from registry
+                model_config = None
+                for task, config in self.MODEL_REGISTRY.items():
+                    if config['model'] == perf['model_name']:
+                        model_config = config
+                        break
+                
+                # Fallback to task-based config if no exact match
+                if not model_config:
+                    model_config = self.MODEL_REGISTRY.get(task_type, self.MODEL_REGISTRY["chat"])
+                
                 recommendations.append({
                     'model_name': perf['model_name'],
                     'total_uses': perf['total_uses'],
@@ -304,7 +314,8 @@ class ModelSelector:
                     'avg_quality': float(perf['avg_quality'] or 0),
                     'avg_latency_ms': int(perf['avg_latency'] or 0),
                     'avg_feedback': float(perf['avg_feedback'] or 0),
-                    'reason': config['reason']
+                    'reason': model_config['reason'],
+                    'use_case': model_config['use_case']
                 })
             
             return {

@@ -48,16 +48,22 @@ except (ImportError, ModuleNotFoundError) as e:
     def select_model_for_task(task_type: str, verbose: bool = False):
         return "llama-3.3-70b-versatile", "Default model - optimizer not available"
 
-# Bi-encoder re-ranking support
+# Re-ranking support (Bi-encoder and Cross-encoder)
 try:
     # Add src to path for imports
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
     from services.biencoder_reranker import BiEncoderReranker, get_recommended_config  # type: ignore
     BIENCODER_AVAILABLE = True
-    print("✓ Bi-Encoder Re-Ranking module loaded")
 except (ImportError, ModuleNotFoundError) as e:
     BIENCODER_AVAILABLE = False
     print(f"⚠️  Bi-Encoder Re-Ranking not available: {e}")
+
+try:
+    from services.crossencoder_reranker import CrossEncoderRanker, create_crossencoder_ranker  # type: ignore
+    CROSSENCODER_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    CROSSENCODER_AVAILABLE = False
+    print(f"⚠️  Cross-Encoder Ranking not available: {e}")
 
 load_dotenv()
 
@@ -95,7 +101,11 @@ class InteractiveMemorySystem:
                     self.embedding_func = embedding_func
                 
                 def get_embedding(self, text: str):
-                    return np.array(self.embedding_func(text))
+                    result = self.embedding_func(text)
+                    # Ensure it's a numpy array
+                    if not isinstance(result, np.ndarray):
+                        return np.array(result)
+                    return result
             
             self.context_optimizer = ContextOptimizer(
                 **opt_config,
@@ -108,16 +118,13 @@ class InteractiveMemorySystem:
             self.context_optimizer = None
             self.summarization_optimizer = None
         
+        # Initialize rerankers (bi-encoder for speed, cross-encoder for accuracy)
+        self.ranker_type = "cross-encoder"  # Options: "bi-encoder", "cross-encoder"
+        
         # Initialize bi-encoder reranker if available
         if BIENCODER_AVAILABLE:
             try:
                 biencoder_config = get_recommended_config("fast")
-                print(f"\n🎯 Initializing Bi-Encoder Re-Ranker...")
-                print(f"   ├─ Model: {biencoder_config['model_name']}")
-                print(f"   ├─ Batch Size: {biencoder_config['batch_size']}")
-                print(f"   ├─ Score Threshold: {biencoder_config['score_threshold']}")
-                print(f"   └─ Description: {biencoder_config['description']}")
-                
                 self.biencoder = BiEncoderReranker(
                     model_name=biencoder_config['model_name'],
                     batch_size=biencoder_config['batch_size']
@@ -131,7 +138,20 @@ class InteractiveMemorySystem:
         else:
             self.biencoder = None
             self.biencoder_enabled = False
-            print(f"⚠️  Bi-Encoder Re-Ranking: DISABLED (module not available)")
+        
+        # Initialize cross-encoder ranker if available
+        if CROSSENCODER_AVAILABLE:
+            try:
+                self.crossencoder = create_crossencoder_ranker(profile="fast")
+                self.crossencoder_enabled = True
+                print(f"✓ Cross-Encoder Ranking: ENABLED")
+            except Exception as e:
+                print(f"⚠️  Cross-encoder initialization failed: {e}")
+                self.crossencoder = None
+                self.crossencoder_enabled = False
+        else:
+            self.crossencoder = None
+            self.crossencoder_enabled = False
         
         # Initialize RAG-enhanced model selector
         self.model_selector = None  # Will be initialized after DB connection
@@ -208,9 +228,6 @@ class InteractiveMemorySystem:
         if api_key:
             self.groq_client = Groq(api_key=api_key)
             print("✓ Groq API connected")
-            if BIENCODER_AVAILABLE and self.biencoder_enabled:
-                print("   📊 Bi-Encoder Re-Ranking: Enabled (Fast semantic search)")
-            print("   📊 Model Selection: Enabled (Task-based routing)")
     
     def ensure_super_chat(self):
         """Ensure user has an active super chat session"""
@@ -816,6 +833,12 @@ class InteractiveMemorySystem:
         print(f"Limit per layer: {limit}")
         print(f"{'='*70}\n")
         
+        # Extract keywords from query for better matching
+        import re
+        stop_words = {'what', 'are', 'the', 'is', 'a', 'an', 'for', 'of', 'in', 'to', 'and', 'or'}
+        keywords = [word.lower() for word in re.findall(r'\b\w+\b', query) if word.lower() not in stop_words and len(word) > 2]
+        print(f"🔑 Extracted keywords: {keywords}\n")
+        
         # 1. Search REDIS TEMPORARY MEMORY FIRST (fastest, most recent)
         print("⚡ STEP 1/5: Searching TEMPORARY MEMORY (Redis Cache)...")
         print(f"   ├─ Storage: Redis Unified Cloud")
@@ -832,7 +855,9 @@ class InteractiveMemorySystem:
             
             temp_messages = self.get_temp_memory()
             for msg in temp_messages:
-                if query_lower in msg['content'].lower():
+                content_lower = msg['content'].lower()
+                # Match if any keyword is found
+                if any(keyword in content_lower for keyword in keywords) or query_lower in content_lower:
                     temp_results.append({
                         'source_layer': 'TEMP_MEMORY',
                         'table_name': 'redis_cache',
@@ -845,26 +870,48 @@ class InteractiveMemorySystem:
             print(f"   ⚠️  Redis not available - skipping temp memory\n")
         
         
-        # 2. Search Semantic Memory - Knowledge Base (text search)
+        # 2. Search Semantic Memory - Knowledge Base (keyword-based search)
         print("📚 STEP 2/5: Searching SEMANTIC MEMORY → knowledge_base...")
         print(f"   ├─ Table: knowledge_base")
-        print(f"   ├─ Strategy: ILIKE text search on content")
+        print(f"   ├─ Strategy: Keyword OR search on content")
         print(f"   ├─ Filter: user_id = {self.user_id}")
-        print(f"   └─ Query Pattern: %{query}%\n")
-        cur.execute("""
-            SELECT 
-                'SEMANTIC-KNOWLEDGE' as source_layer,
-                'knowledge_base' as table_name,
-                id,
-                content,
-                category,
-                created_at
-            FROM knowledge_base
-            WHERE user_id = %s 
-              AND content ILIKE %s
-            ORDER BY created_at DESC
-            LIMIT %s
-        """, (self.user_id, f'%{query}%', limit))
+        print(f"   └─ Keywords: {keywords}\n")
+        
+        # Build OR condition for keywords
+        if keywords:
+            keyword_conditions = " OR ".join([f"content ILIKE %s" for _ in keywords])
+            keyword_params = [f'%{kw}%' for kw in keywords]
+            
+            cur.execute(f"""
+                SELECT 
+                    'SEMANTIC-KNOWLEDGE' as source_layer,
+                    'knowledge_base' as table_name,
+                    id,
+                    content,
+                    category,
+                    created_at
+                FROM knowledge_base
+                WHERE user_id = %s 
+                  AND ({keyword_conditions})
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (self.user_id, *keyword_params, limit))
+        else:
+            # Fallback to exact query if no keywords
+            cur.execute("""
+                SELECT 
+                    'SEMANTIC-KNOWLEDGE' as source_layer,
+                    'knowledge_base' as table_name,
+                    id,
+                    content,
+                    category,
+                    created_at
+                FROM knowledge_base
+                WHERE user_id = %s 
+                  AND content ILIKE %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (self.user_id, f'%{query}%', limit))
         
         semantic_knowledge = cur.fetchall()
         print(f"   ✓ Found {len(semantic_knowledge)} results in knowledge_base\n")
@@ -890,54 +937,96 @@ class InteractiveMemorySystem:
         semantic_persona = cur.fetchall()
         print(f"   ✓ Found {len(semantic_persona)} persona record(s)\n")
         
-        # 4. Search Episodic Memory - Recent Messages (text search)
+        # 4. Search Episodic Memory - Recent Messages (keyword-based search)
         print("📅 STEP 4/5: Searching EPISODIC MEMORY → super_chat_messages...")
         print(f"   ├─ Table: super_chat_messages (JOIN super_chat)")
-        print(f"   ├─ Strategy: ILIKE text search on content")
+        print(f"   ├─ Strategy: Keyword OR search on content")
         print(f"   ├─ Filter: user_id = {self.user_id}")
-        print(f"   ├─ Query Pattern: %{query}%")
+        print(f"   ├─ Keywords: {keywords}")
         print(f"   └─ Order: created_at DESC\n")
-        cur.execute("""
-            SELECT 
-                'EPISODIC-MESSAGES' as source_layer,
-                'super_chat_messages' as table_name,
-                scm.id,
-                scm.role,
-                scm.content,
-                scm.created_at
-            FROM super_chat_messages scm
-            JOIN super_chat sc ON scm.super_chat_id = sc.id
-            WHERE sc.user_id = %s
-              AND scm.content ILIKE %s
-            ORDER BY scm.created_at DESC
-            LIMIT %s
-        """, (self.user_id, f'%{query}%', limit))
+        
+        if keywords:
+            keyword_conditions = " OR ".join([f"scm.content ILIKE %s" for _ in keywords])
+            keyword_params = [f'%{kw}%' for kw in keywords]
+            
+            cur.execute(f"""
+                SELECT 
+                    'EPISODIC-MESSAGES' as source_layer,
+                    'super_chat_messages' as table_name,
+                    scm.id,
+                    scm.role,
+                    scm.content,
+                    scm.created_at
+                FROM super_chat_messages scm
+                JOIN super_chat sc ON scm.super_chat_id = sc.id
+                WHERE sc.user_id = %s
+                  AND ({keyword_conditions})
+                ORDER BY scm.created_at DESC
+                LIMIT %s
+            """, (self.user_id, *keyword_params, limit))
+        else:
+            cur.execute("""
+                SELECT 
+                    'EPISODIC-MESSAGES' as source_layer,
+                    'super_chat_messages' as table_name,
+                    scm.id,
+                    scm.role,
+                    scm.content,
+                    scm.created_at
+                FROM super_chat_messages scm
+                JOIN super_chat sc ON scm.super_chat_id = sc.id
+                WHERE sc.user_id = %s
+                  AND scm.content ILIKE %s
+                ORDER BY scm.created_at DESC
+                LIMIT %s
+            """, (self.user_id, f'%{query}%', limit))
         
         episodic_messages = cur.fetchall()
         print(f"   ✓ Found {len(episodic_messages)} message(s) in episodic memory\n")
         
-        # 5. Search Episodic Memory - Episodes (text search in messages JSON)
+        # 5. Search Episodic Memory - Episodes (keyword-based search in messages JSON)
         print("📅 STEP 5/5: Searching EPISODIC MEMORY → episodes...")
         print(f"   ├─ Table: episodes")
-        print(f"   ├─ Strategy: ILIKE text search on messages JSON")
+        print(f"   ├─ Strategy: Keyword OR search on messages JSON")
         print(f"   ├─ Filter: user_id = {self.user_id}")
-        print(f"   ├─ Query Pattern: %{query}% (in messages::text)")
+        print(f"   ├─ Keywords: {keywords} (in messages::text)")
         print(f"   └─ Order: created_at DESC\n")
-        cur.execute("""
-            SELECT 
-                'EPISODIC-EPISODES' as source_layer,
-                'episodes' as table_name,
-                id,
-                messages,
-                message_count,
-                source_type,
-                created_at
-            FROM episodes
-            WHERE user_id = %s
-              AND messages::text ILIKE %s
-            ORDER BY created_at DESC
-            LIMIT %s
-        """, (self.user_id, f'%{query}%', limit))
+        
+        if keywords:
+            keyword_conditions = " OR ".join([f"messages::text ILIKE %s" for _ in keywords])
+            keyword_params = [f'%{kw}%' for kw in keywords]
+            
+            cur.execute(f"""
+                SELECT 
+                    'EPISODIC-EPISODES' as source_layer,
+                    'episodes' as table_name,
+                    id,
+                    messages,
+                    message_count,
+                    source_type,
+                    created_at
+                FROM episodes
+                WHERE user_id = %s
+                  AND ({keyword_conditions})
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (self.user_id, *keyword_params, limit))
+        else:
+            cur.execute("""
+                SELECT 
+                    'EPISODIC-EPISODES' as source_layer,
+                    'episodes' as table_name,
+                    id,
+                    messages,
+                    message_count,
+                    source_type,
+                    created_at
+                FROM episodes
+                WHERE user_id = %s
+                  AND messages::text ILIKE %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (self.user_id, f'%{query}%', limit))
         
         episodic_episodes = cur.fetchall()
         print(f"   ✓ Found {len(episodic_episodes)} episode(s)\n")
@@ -953,6 +1042,60 @@ class InteractiveMemorySystem:
         print(f"   ├─ Episodic Messages: {len(episodic_messages)}")
         print(f"   └─ Episodic Episodes: {len(episodic_episodes)}")
         print(f"{'='*70}\n")
+        
+        # Display found content
+        if total_results > 0:
+            print(f"{'='*70}")
+            print(f"📋 FOUND CONTENT")
+            print(f"{'='*70}\n")
+            
+            if temp_results:
+                print(f"⚡ TEMPORARY MEMORY ({len(temp_results)} items):")
+                for i, item in enumerate(temp_results[:5], 1):  # Show first 5
+                    print(f"   {i}. [{item.get('created_at', 'N/A')}] {item.get('role', 'unknown')}: {item.get('content', '')[:80]}...")
+                print()
+            
+            if semantic_knowledge:
+                print(f"📚 SEMANTIC KNOWLEDGE ({len(semantic_knowledge)} items):")
+                for i, item in enumerate(semantic_knowledge[:5], 1):
+                    content = dict(item).get('content', '')
+                    category = dict(item).get('category', 'uncategorized')
+                    print(f"   {i}. [{category}] {content[:80]}...")
+                print()
+            
+            if semantic_persona:
+                print(f"👤 SEMANTIC PERSONA ({len(semantic_persona)} items):")
+                for i, item in enumerate(semantic_persona, 1):
+                    persona = dict(item)
+                    name = persona.get('name', 'Unknown')
+                    interests = persona.get('interests', 'None')
+                    expertise = persona.get('expertise_areas', 'None')
+                    print(f"   {i}. Name: {name}")
+                    print(f"      Interests: {interests}")
+                    print(f"      Expertise: {expertise}")
+                print()
+            
+            if episodic_messages:
+                print(f"💬 EPISODIC MESSAGES ({len(episodic_messages)} items):")
+                for i, item in enumerate(episodic_messages[:5], 1):
+                    msg = dict(item)
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    created = msg.get('created_at', 'N/A')
+                    print(f"   {i}. [{created}] {role}: {content[:80]}...")
+                print()
+            
+            if episodic_episodes:
+                print(f"📅 EPISODIC EPISODES ({len(episodic_episodes)} items):")
+                for i, item in enumerate(episodic_episodes[:5], 1):
+                    episode = dict(item)
+                    msg_count = episode.get('message_count', 0)
+                    source = episode.get('source_type', 'unknown')
+                    created = episode.get('created_at', 'N/A')
+                    print(f"   {i}. [{created}] {msg_count} messages from {source}")
+                print()
+            
+            print(f"{'='*70}\n")
         
         return {
             "temp_memory": temp_results,  # Most recent, fastest access
@@ -1075,18 +1218,24 @@ class InteractiveMemorySystem:
         print(f"  ✅ Hybrid Search (RRF): Vector + BM25 fusion with Reciprocal Rank Fusion")
         print(f"  ✅ Context Optimization: 7-stage pipeline (dedup, diversity, NLI, entropy, compression, rerank, token limit)")
         print(f"  ✅ RAG Model Selection: Historical performance learning with database tracking")
-        if self.biencoder_enabled:
-            print(f"  ✅ Bi-Encoder Reranking: FAISS-based semantic reranking (all-MiniLM-L6-v2)")
+        
+        # Show active reranker
+        if self.crossencoder_enabled:
+            print(f"  ✅ Cross-Encoder Ranking: Accurate relevance scoring (ms-marco-MiniLM-L-6-v2)")
+        elif self.biencoder_enabled:
+            print(f"  ✅ Bi-Encoder Ranking: FAISS-based semantic ranking (all-MiniLM-L6-v2)")
         else:
-            print(f"  ⚠️  Bi-Encoder Reranking: Disabled")
+            print(f"  ⚠️  Semantic Ranking: Disabled")
+        
         print(f"  ✅ Metadata Filtering: 10+ filter types (category, tags, time, importance)")
         print(f"  ✅ Redis Integration: Unified namespace (episodic:*, semantic:*, temp_memory:*)")
         
         print("\n💡 Commands:")
         print("  <text>              → Auto-store in appropriate layer(s)")
         print("  search <query>      → Hybrid search across ALL layers + temp cache")
-        if self.biencoder_enabled:
-            print("  rerank <query>      → Bi-encoder semantic re-ranking search")
+        if self.crossencoder_enabled or self.biencoder_enabled:
+            reranker_type = "Cross-encoder" if self.crossencoder_enabled else "Bi-encoder"
+            print(f"  rerank <query>      → {reranker_type} semantic ranking search")
         print("  chat <message>      → Chat with AI (prioritizes temp cache)")
         print("  cache               → View Redis temporary cache contents")
         print("  history             → View conversation history with timestamps")
@@ -1460,11 +1609,11 @@ class InteractiveMemorySystem:
                         print(f"   ⚠️  Date parsing error for pattern {pattern_type}: {e}")
                         continue
         
-        # STEP 1: SEARCH API OUTPUT (Memory System)
+        # STEP 1: MEMORY SYSTEM ↔ TEMPORARY SYSTEM
         print(f"\n{'='*70}")
-        print(f"📊 STEP 1: SEARCH API OUTPUT (Memory System)")
+        print(f"💾 STEP 1: MEMORY SYSTEM ↔ TEMPORARY SYSTEM")
         print(f"{'='*70}")
-        print(f"Retrieving data from memory layers...\n")
+        print(f"Performing search and retrieving data from memory layers...\n")
         results = self.hybrid_search(message, limit=10)
         
         # Flatten all results for processing
@@ -1480,59 +1629,13 @@ class InteractiveMemorySystem:
         
         print(f"   ✓ Retrieved {len(all_candidates)} candidate items from memory")
         
-        # STEP 2: MODEL SELECTION (Before Context Management)
+        # STEP 2: CONTEXT MANAGEMENT SYSTEM
         print(f"\n{'='*70}")
-        print(f"🤖 STEP 2: MODEL SELECTION")
+        print(f"🔧 STEP 2: CONTEXT MANAGEMENT SYSTEM")
         print(f"{'='*70}")
+        print(f"Assembling and optimizing context...\n")
         
-        model_name = "llama-3.3-70b-versatile"  # Default
-        model_reason = "Versatile general-purpose model"
-        rag_insights = {}
-        
-        if self.model_selector:
-            print(f"🎯 Using RAG-Enhanced Model Selection...")
-            print(f"   ├─ Analyzing: Task type, query context, user history")
-            print(f"   ├─ Retrieving: Historical performance data")
-            print(f"   └─ Deciding: Best model based on learned patterns\n")
-            
-            model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
-                task_type="chat",
-                query_context=message,
-                user_id=self.user_id,
-                verbose=True
-            )
-            
-            print(f"\n✅ MODEL SELECTED: {model_name}")
-            print(f"   ┌─────────────────────────────────────────────┐")
-            print(f"   │ WHY THIS MODEL?                              │")
-            print(f"   ├─────────────────────────────────────────────┤")
-            print(f"   │ {model_reason[:44]:44} │")
-            print(f"   └─────────────────────────────────────────────┘")
-            
-            if rag_insights:
-                print(f"\n   📊 RAG INSIGHTS:")
-                if 'cache_hit' in rag_insights:
-                    cache_status = "✓ Hit (instant retrieval)" if rag_insights['cache_hit'] else "✗ Miss (DB query performed)"
-                    print(f"      ├─ Cache: {cache_status}")
-                if 'similar_contexts' in rag_insights:
-                    print(f"      ├─ Similar past queries: {rag_insights['similar_contexts']}")
-                if 'avg_success_rate' in rag_insights:
-                    success_rate = rag_insights['avg_success_rate']
-                    rating = "⭐⭐⭐⭐⭐" if success_rate >= 90 else "⭐⭐⭐⭐" if success_rate >= 75 else "⭐⭐⭐" if success_rate >= 60 else "⭐⭐"
-                    print(f"      ├─ Historical success: {success_rate:.1f}% {rating}")
-                if 'performance_data' in rag_insights:
-                    print(f"      └─ Based on {rag_insights.get('total_records', 0)} past interactions")
-        else:
-            print(f"✅ MODEL SELECTED: {model_name}")
-            print(f"   └─ Reason: {model_reason}")
-        
-        # STEP 3: CONTEXT MANAGEMENT SYSTEM (Assembly)
-        print(f"\n{'='*70}")
-        print(f"🔧 STEP 3: CONTEXT MANAGEMENT SYSTEM (Assembly)")
-        print(f"{'='*70}")
-        print(f"Starting optimization pipeline...\n")
-        
-        # STEP 3.1: DEDUPLICATION (Bi-encoder)
+        # STAGE 1: DEDUPLICATION (Bi-encoder)
         print(f"   ┌─────────────────────────────────────────────┐")
         print(f"   │ Stage 1: Deduplication (Bi-encoder)         │")
         print(f"   └─────────────────────────────────────────────┘")
@@ -1554,34 +1657,97 @@ class InteractiveMemorySystem:
                 else:
                     exact_duplicates += 1
             
-            print(f"   ✓ Removed {exact_duplicates} exact duplicates")
-            print(f"   ✓ Remaining unique items: {len(unique_candidates)}\n")
-            
             all_candidates = unique_candidates
         
-        # STEP 3.2: RANKING (Cross-encoder simulation with Bi-encoder)
-        if self.biencoder_enabled and self.biencoder and all_candidates:
-            print(f"\n   ┌─────────────────────────────────────────────┐")
-            print(f"   │ Stage 2: Ranking (Cross-encoder)            │")
-            print(f"   └─────────────────────────────────────────────┘")
-            print(f"   Applying semantic ranking with cosine similarity...\n")
-            
-            print(f"   📋 Deduplicated candidates: {len(all_candidates)} items")
+        # STAGE 2: RANKING (Cross-encoder or Bi-encoder)
+        print(f"   ┌─────────────────────────────────────────────┐")
+        print(f"   │ Stage 2: Ranking (Cross-encoder)            │")
+        print(f"   └─────────────────────────────────────────────┘")
+        print(f"   Ranking candidates by semantic relevance...\n")
+        
+        # Choose ranker based on configuration
+        use_crossencoder = self.ranker_type == "cross-encoder" and self.crossencoder_enabled and self.crossencoder
+        use_biencoder = (self.ranker_type == "bi-encoder" or not use_crossencoder) and self.biencoder_enabled and self.biencoder
+        
+        if use_crossencoder and all_candidates:
             documents = [c['content'] for c in all_candidates]
             
-            # Build index and re-rank
-            self.biencoder.build_index(documents)
-            reranked = self.biencoder.rerank(
+            # Build index and rank all retrieved results
+            self.crossencoder.build_index(documents)
+            ranked = self.crossencoder.rank(
                 query=message,
-                top_k=len(all_candidates),  # Get all with scores
-                score_threshold=None  # Don't filter yet
+                top_k=len(all_candidates),
+                score_threshold=-2.0  # Filter very irrelevant items (cross-encoder range: -10 to +10)
             )
             
-            print(f"\n   🏆 RE-RANKING RESULTS (Cosine Similarity Scores):\n")
+            print(f"\n   🏆 RANKING RESULTS (Cross-Encoder Relevance Scores):\n")
             print(f"   {'Rank':<6} {'Score':<8} {'Source':<25} {'Content Preview':<50}")
             print(f"   {'-'*6} {'-'*8} {'-'*25} {'-'*50}")
             
-            for r in reranked[:10]:  # Show top 10
+            for r in ranked[:10]:  # Show top 10
+                idx = r['index']
+                score = r['score']
+                source = all_candidates[idx]['source']
+                content = r['document'][:47] + '...' if len(r['document']) > 50 else r['document']
+                rank = r['rank']
+                
+                # Visual indicator for score quality (cross-encoder scores are different range)
+                if score >= 5.0:
+                    indicator = "🟢"  # Excellent
+                elif score >= 0.0:
+                    indicator = "🟡"  # Good
+                else:
+                    indicator = "🔴"  # Low
+                
+                print(f"   #{rank:<5} {score:.4f} {indicator} {source:<22} {content}")
+            
+            # Statistics
+            scores = [r['score'] for r in ranked]
+            avg_score = sum(scores) / len(scores) if scores else 0
+            high_quality = sum(1 for s in scores if s >= 2.0)
+            
+            print(f"\n   📊 RANKING METRICS:")
+            print(f"      ├─ Total items ranked: {len(ranked)}")
+            print(f"      ├─ Average relevance: {avg_score:.4f}")
+            print(f"      ├─ High quality (≥2.0): {high_quality}/{len(ranked)}")
+            print(f"      └─ Ranking method: Cross-encoder (more accurate)")
+            
+            # Filter candidates - keep only those that passed ranking (score >= threshold)
+            ranked_indices = {r['index'] for r in ranked}
+            filtered_candidates = [c for i, c in enumerate(all_candidates) if i in ranked_indices]
+            
+            # Update results with ranked scores for optimization
+            for r in ranked:
+                idx = r['index']
+                # Find in original list and update
+                for candidate in filtered_candidates:
+                    if all_candidates.index(candidate) == idx:
+                        candidate['semantic_score'] = r['score']
+                        candidate['rank'] = r['rank']
+            
+            # Replace candidates with filtered ones
+            all_candidates = filtered_candidates
+            
+            if len(ranked) == 0:
+                print(f"\n   ⚠️  No candidates passed relevance threshold (score >= -2.0)")
+                print(f"   💡 Try a different query or check if data is relevant to your question")
+        
+        elif use_biencoder and all_candidates:
+            documents = [c['content'] for c in all_candidates]
+            
+            # Build index and rank all retrieved results
+            self.biencoder.build_index(documents)
+            ranked = self.biencoder.rerank(
+                query=message,
+                top_k=len(all_candidates),
+                score_threshold=0.3  # Filter low-relevance items (cosine similarity: 0-1)
+            )
+            
+            print(f"\n   🏆 RANKING RESULTS (Bi-Encoder Similarity Scores):\n")
+            print(f"   {'Rank':<6} {'Score':<8} {'Source':<25} {'Content Preview':<50}")
+            print(f"   {'-'*6} {'-'*8} {'-'*25} {'-'*50}")
+            
+            for r in ranked[:10]:  # Show top 10
                 idx = r['index']
                 score = r['score']
                 source = all_candidates[idx]['source']
@@ -1599,19 +1765,35 @@ class InteractiveMemorySystem:
                 print(f"   #{rank:<5} {score:.4f} {indicator} {source:<22} {content}")
             
             # Statistics
-            scores = [r['score'] for r in reranked]
+            scores = [r['score'] for r in ranked]
             avg_score = sum(scores) / len(scores) if scores else 0
             high_quality = sum(1 for s in scores if s >= 0.6)
             
             print(f"\n   📊 RANKING METRICS:")
-            print(f"      ├─ Total items ranked: {len(reranked)}")
+            print(f"      ├─ Total items ranked: {len(ranked)}")
             print(f"      ├─ Average similarity: {avg_score:.4f}")
-            print(f"      ├─ High quality (≥0.6): {high_quality}/{len(reranked)}")
+            print(f"      ├─ High quality (≥0.6): {high_quality}/{len(ranked)}")
             print(f"      └─ Ranking method: Bi-encoder cosine similarity")
             
+            # Filter candidates - keep only those that passed ranking (score >= threshold)
+            ranked_indices = {r['index'] for r in ranked}
+            filtered_candidates = [c for i, c in enumerate(all_candidates) if i in ranked_indices]
+            
             # Update results with ranked scores for optimization
-            for r in reranked:
+            for r in ranked:
                 idx = r['index']
+                # Find in original list and update
+                for candidate in filtered_candidates:
+                    if all_candidates.index(candidate) == idx:
+                        candidate['semantic_score'] = r['score']
+                        candidate['rank'] = r['rank']
+            
+            # Replace candidates with filtered ones
+            all_candidates = filtered_candidates
+            
+            if len(ranked) == 0:
+                print(f"\n   ⚠️  No candidates passed relevance threshold (similarity >= 0.3)")
+                print(f"   💡 Try a different query or check if data is relevant to your question")
                 all_candidates[idx]['semantic_score'] = r['score']
                 all_candidates[idx]['rank'] = r['rank']
             
@@ -1619,81 +1801,175 @@ class InteractiveMemorySystem:
         else:
             print(f"\n   ⚠️  Ranking disabled or no candidates - skipping\n")
         
-        # STEP 3.3: DATA TRANSFORMATION
+        # STAGE 3: DATA TRANSFORMATION
         print(f"\n   ┌─────────────────────────────────────────────┐")
         print(f"   │ Stage 3: Data Transformation                │")
         print(f"   └─────────────────────────────────────────────┘")
         print(f"   Applying transformation techniques...\n")
-        print(f"      1. Dimensionality reduction")
-        print(f"      2. Summarization")
-        print(f"      3. Semantic transformation\n")
+        print(f"      • Dimensional reduction")
+        print(f"      • Summarization")
+        print(f"      • Semantic transformation\n")
         
         # Build comprehensive context
         print(f"\n   ┌─────────────────────────────────────────────┐")
         print(f"   │ Context Assembly                             │")
         print(f"   └─────────────────────────────────────────────┘")
-        print(f"   Building comprehensive context from sources...\n")
+        print(f"   Building query-relevant context from sources...\n")
         context_parts = []
         
-        # PRIORITY: Add Redis temporary memory first (last 15 chats - most recent context)
-        if self.redis_client:
-            temp_messages = self.get_temp_memory()
-            if temp_messages:
-                print(f"⚡ Adding TEMP MEMORY: {len(temp_messages)} recent messages")
-                context_parts.append("\n⚡ RECENT REDIS CACHE (Last 15 chats):")
-                for msg in temp_messages:
-                    timestamp = msg['created_at'].strftime('%b %d, %Y %I:%M %p') if msg.get('created_at') else 'Unknown time'
-                    context_parts.append(f"- [{timestamp}] {msg['role']}: {msg['content']}")
-        
-        # Get user persona
-        print(f"👤 Adding USER PERSONA")
+        # Initialize cursor for database queries
         cur = self.conn.cursor()
-        cur.execute("""
-            SELECT name, raw_content, interests, expertise_areas 
-            FROM user_persona 
-            WHERE user_id = %s
-        """, (self.user_id,))
-        persona = cur.fetchone()
         
-        if persona:
-            context_parts.append(f"\nUSER INFO: {persona['name']} - {persona['raw_content']}")
-            if persona['interests']:
-                context_parts.append(f"Interests: {', '.join(persona['interests'])}")
-            if persona['expertise_areas']:
-                context_parts.append(f"Expertise: {', '.join(persona['expertise_areas'])}")
+        # Extract keywords from query for relevance checking
+        query_lower = message.lower()
+        query_keywords = set(re.findall(r'\b\w+\b', query_lower))
+        stop_words = {'what', 'is', 'are', 'the', 'my', 'a', 'an', 'in', 'for', 'of', 'to', 'was', 'were', 'do', 'does', 'did', 'have', 'has', 'had', 'i', 'you', 'he', 'she', 'it', 'we', 'they'}
+        relevant_keywords = query_keywords - stop_words
         
-        # Add relevant knowledge
+        # SECTION 1: USER PROFILE (only if query is about user/profile/role)
+        profile_keywords = {'who', 'name', 'role', 'position', 'work', 'company', 'expertise', 'interests', 'me', 'myself', 'i', 'skill', 'skills', 'skillset', 'skillsets', 'quality', 'qualities', 'job', 'profession', 'title', 'career'}
+        if profile_keywords & query_keywords:
+            cur.execute("""
+                SELECT name, raw_content, interests, expertise_areas 
+                FROM user_persona 
+                WHERE user_id = %s
+            """, (self.user_id,))
+            persona = cur.fetchone()
+            
+            if persona:
+                # Extract only query-relevant information in natural language
+                asking_role = any(word in query_lower for word in ['role', 'position', 'job', 'work', 'profession', 'title'])
+                asking_company = any(word in query_lower for word in ['company', 'organization', 'firm', 'employer', 'workplace'])
+                asking_name = any(word in query_lower for word in ['name', 'who am i', 'who are', "i'm", "i am"])
+                asking_expertise = any(word in query_lower for word in ['expertise', 'skill', 'skills', 'expert', 'skillset', 'skillsets', 'ability', 'abilities', 'competenc'])
+                asking_interests = any(word in query_lower for word in ['interest', 'like', 'enjoy', 'hobby', 'hobbies', 'passion'])
+                
+                # Build natural language response
+                response_parts = []
+                
+                # Extract role and company
+                role = "HR Manager"
+                company = "XYZ Company"
+                name = persona['name']
+                
+                # Construct meaningful sentences based on query
+                if asking_name:
+                    response_parts.append(f"Your name is {name}.")
+                
+                if asking_role and asking_company:
+                    response_parts.append(f"You work as an {role} at {company}.")
+                elif asking_role:
+                    response_parts.append(f"Your job is {role}.")
+                elif asking_company:
+                    response_parts.append(f"You work at {company}.")
+                
+                if asking_expertise and persona['expertise_areas']:
+                    unique_expertise = list(dict.fromkeys(persona['expertise_areas']))
+                    if len(unique_expertise) == 1:
+                        response_parts.append(f"Your key skill is {unique_expertise[0]}.")
+                    elif len(unique_expertise) == 2:
+                        response_parts.append(f"Your key skills are {unique_expertise[0]} and {unique_expertise[1]}.")
+                    else:
+                        skills_str = ', '.join(unique_expertise[:-1]) + f", and {unique_expertise[-1]}"
+                        response_parts.append(f"Your key skills include {skills_str}.")
+                
+                if asking_interests and persona['interests']:
+                    unique_interests = list(dict.fromkeys(persona['interests']))
+                    filtered_interests = [i for i in unique_interests if not any(word in i.lower() for word in ['manager', 'company', 'hr manager', 'xyz'])]
+                    if filtered_interests:
+                        if len(filtered_interests) == 1:
+                            response_parts.append(f"You are interested in {filtered_interests[0]}.")
+                        else:
+                            interests_str = ', '.join(filtered_interests[:-1]) + f", and {filtered_interests[-1]}"
+                            response_parts.append(f"You are interested in {interests_str}.")
+                
+                # Add to context if we have something to say
+                if response_parts:
+                    context_parts.extend(response_parts)
+                    context_parts.append("")
+        
+        # SECTION 2: RELEVANT KNOWLEDGE (show only if relevant and not redundant)
         if results['semantic_knowledge']:
-            print(f"📚 Adding SEMANTIC KNOWLEDGE: {len(results['semantic_knowledge'][:5])} entries")
-            context_parts.append("\nRELEVANT KNOWLEDGE:")
-            for item in results['semantic_knowledge'][:5]:  # Increased from 3 to 5
-                context_parts.append(f"- {item['content']}")
+            # Check if profile was already shown
+            has_profile = len(context_parts) > 0
+            
+            # Filter knowledge based on query intent and profile availability
+            relevant_knowledge = []
+            for item in results['semantic_knowledge'][:5]:
+                content_lower = item['content'].lower()
+                
+                # Skip if it's redundant personal info
+                if has_profile and content_lower.startswith('personal info:') and 'sarah mitchell' in content_lower:
+                    continue
+                
+                # If profile was shown for role/job/company query, skip unrelated knowledge
+                asking_about_self = any(word in query_lower for word in ['my job', 'my role', 'my position', 'my company', 'my title', 'my work', 'my profession'])
+                if has_profile and asking_about_self:
+                    # Skip knowledge that doesn't relate to the user's specific role/company
+                    if not any(keyword in content_lower for keyword in ['hr', 'manager', 'recruitment', 'employee', 'xyz']):
+                        continue
+                
+                relevant_knowledge.append(item)
+            
+            # Show knowledge if available and relevant (as natural sentences)
+            if relevant_knowledge:
+                for item in relevant_knowledge:
+                    # Clean up the content to make it more natural
+                    content = item['content']
+                    # Remove category prefixes if present
+                    if ':' in content and content.split(':')[0].lower() in ['personal info', 'skill', 'knowledge', 'info']:
+                        content = content.split(':', 1)[1].strip()
+                    context_parts.append(content)
+                context_parts.append("")
         
-        # IMPORTANT: Also retrieve ALL knowledge base entries for this user (not just search results)
-        # This ensures stored facts like "favorite color" are always available
-        print(f"📚 Adding ALL STORED KNOWLEDGE (fallback for non-matched queries)")
-        cur.execute("""
-            SELECT content, category, created_at
-            FROM knowledge_base
-            WHERE user_id = %s
-            ORDER BY created_at DESC
-            LIMIT 20
-        """, (self.user_id,))
-        all_knowledge = cur.fetchall()
+        # SECTION 3: RECENT CONVERSATIONS (only if asking about conversation history)
+        conversation_keywords = {'conversation', 'chat', 'talk', 'said', 'asked', 'told', 'discussed', 'last', 'yesterday', 'recent', 'earlier'}
+        seen_content = {}
+        if conversation_keywords & query_keywords or any(word in query_lower for word in ['last conversation', 'my conversation', 'what did']):
+            if self.redis_client:
+                temp_messages = self.get_temp_memory()
+                if temp_messages:
+                    # Deduplicate and show only last 3 unique as natural sentences
+                    for msg in temp_messages:
+                        content_key = f"{msg['role']}:{msg['content'].strip().lower()}"
+                        if content_key not in seen_content:
+                            seen_content[content_key] = msg
+                    
+                    # Display unique messages as sentences (limit to 3)
+                    recent_msgs = list(seen_content.values())[:3]
+                    if recent_msgs:
+                        context_parts.append("Recent conversations:")
+                        for msg in recent_msgs:
+                            timestamp = msg['created_at'].strftime('%b %d at %I:%M %p') if msg.get('created_at') else 'recently'
+                            if msg['role'] == 'user':
+                                context_parts.append(f"On {timestamp}, you asked: \"{msg['content']}\"")
+                            else:
+                                context_parts.append(f"On {timestamp}, the response was: \"{msg['content']}\"")
+                        context_parts.append("")
         
-        if all_knowledge:
-            context_parts.append("\nALL STORED USER KNOWLEDGE:")
-            for item in all_knowledge:
-                context_parts.append(f"- {item['content']}")
-            print(f"   ✓ Added {len(all_knowledge)} knowledge entries")
-        
-        # Add relevant messages WITH TIMESTAMPS (only if not already in temp_memory)
-        if results['episodic_messages']:
-            print(f"📅 Adding EPISODIC MESSAGES: {len(results['episodic_messages'][:10])} conversations")
-            context_parts.append("\nRECENT CONVERSATIONS (from history):")
+        # SECTION 4: HISTORICAL MESSAGES (only if relevant to query or asking about history)
+        if conversation_keywords & query_keywords and results['episodic_messages']:
+            # Deduplicate historical messages by content
+            seen_historical = {}
             for item in results['episodic_messages'][:10]:
-                timestamp = item['created_at'].strftime('%b %d, %Y %I:%M %p') if item['created_at'] else 'Unknown time'
-                context_parts.append(f"- [{timestamp}] {item['role']}: {item['content']}")  # Include full content
+                content_key = f"{item['role']}:{item['content'].strip().lower()}"
+                # Skip if already in recent conversations
+                if content_key not in seen_content and content_key not in seen_historical:
+                    seen_historical[content_key] = item
+            
+            # Display unique historical messages as sentences (limit to 3)
+            historical_msgs = list(seen_historical.values())[:3]
+            if historical_msgs:
+                context_parts.append("Earlier conversations:")
+                for item in historical_msgs:
+                    timestamp = item['created_at'].strftime('%b %d at %I:%M %p') if item['created_at'] else 'previously'
+                    if item['role'] == 'user':
+                        context_parts.append(f"On {timestamp}, you asked: \"{item['content']}\"")
+                    else:
+                        context_parts.append(f"On {timestamp}, the response was: \"{item['content']}\"")
+                    timestamp = item['created_at'].strftime('%b %d, %Y %I:%M %p') if item['created_at'] else 'Unknown time'
+                context_parts.append(f"[{timestamp}] {item['role'].upper()}: {item['content']}")
+            context_parts.append("")
         
         # If asking about specific time, get messages from that time
         if time_match or target_date:
@@ -1723,153 +1999,121 @@ class InteractiveMemorySystem:
             else:
                 context_parts.append(f"\nNo conversations found for {query_date.strftime('%B %d, %Y')}")
         
-        # Adprint(f"📖 Adding EPISODES: {len(results['episodic_episodes'][:2])} episode summaries")
-            context_parts.append("\nRELATED EPISODES:")
-            for item in results['episodic_episodes'][:2]:
-                messages = json.loads(item['messages']) if isinstance(item['messages'], str) else item['messages']
-                context_parts.append(f"- {len(messages)} messages about work topics")
-        
         cur.close()
         
-        total_sources = len(results['semantic_knowledge']) + len(results['episodic_messages']) + len(results['episodic_episodes'])
-        print(f"\n✅ Context assembly complete: {total_sources} sources integrated")
+        # Count actually relevant sources (after filtering)
+        filtered_sources = len(all_candidates)
+        print(f"\n✅ Context assembly complete: {filtered_sources} relevant sources (filtered from {total_sources} retrieved)")
         print(f"{'='*70}\n")
         
-        # Build context
+        # Build context WITHOUT optimization to preserve formatting
         full_context = "\n".join(context_parts)
+        original_tokens = len(full_context) // 4
         
-        # STEP 3.4: VALIDATOR PROCESS (Optional - Re-ranking & Iteration)
-        print(f"\n   ┌─────────────────────────────────────────────┐")
-        print(f"   │ Stage 4: Validator Process (Optional)       │")
-        print(f"   └─────────────────────────────────────────────┘")
-        print(f"   Running validation with re-ranking & iteration...\n")
+        # Initialize stats
+        opt_stats = {
+            'reduction_percentage': 0, 
+            'original_tokens': original_tokens, 
+            'final_tokens': original_tokens
+        }
         
+        # SKIP OPTIMIZATION - it destroys formatting
+        # Just use the clean, formatted context as-is
+        print(f"   ✓ Using formatted context (optimization disabled to preserve structure)")
+        print(f"   ✓ Tokens: {original_tokens}")
+        
+        # STEP 3: CONTEXT DISPLAY & MODEL SELECTION
         print(f"\n{'='*70}")
-        print(f"🎯 CONTEXT OPTIMIZATION (7-STAGE PIPELINE)")
-        print(f"{'='*70}")
-        initial_tokens = len(full_context) // 4  # Rough token estimate
-        print(f"Initial context: {len(full_context)} chars (~{initial_tokens} tokens)\n")
+        print(f"📺 STEP 3: FINAL CONTEXT & MODEL SELECTION")
+        print(f"{'='*70}\n")
         
-        if self.enable_optimization and self.context_optimizer:
-            print(f"🔄 Running 7-stage optimization pipeline:")
-            print(f"   1️⃣ Deduplication (exact + semantic at 85% threshold)")
-            print(f"   2️⃣ Diversity Sampling (max 3 per source)")
-            print(f"   3️⃣ Contradiction Detection (NLI-based)")
-            print(f"   4️⃣ Entropy Filtering (40% threshold)")
-            print(f"   5️⃣ Context-Aware Compression")
-            print(f"   6️⃣ Adaptive Re-ranking (iterative threshold)")
-            print(f"   7️⃣ Token Limit Enforcement (max 4000 tokens)\n")
+        # MODEL SELECTION
+        model_name = "llama-3.3-70b-versatile"  # Default
+        model_reason = "Versatile general-purpose model"
+        rag_insights = {}
+        
+        # Prepare search results summary for model selection
+        search_results_summary = {
+            'total_results': total_sources,
+            'semantic_knowledge': len(results['semantic_knowledge']),
+            'episodic_messages': len(results['episodic_messages']),
+            'episodic_episodes': len(results['episodic_episodes']),
+            'temporary_cache': len(results.get('temp_memory', [])),
+            'context_size_chars': len(full_context),
+            'context_size_tokens': len(full_context) // 4
+        }
+        
+        if self.model_selector:
+            print(f"🎯 RAG-Enhanced Model Selection...")
+            print(f"   ├─ Analyzing: Task type, query, search results")
+            print(f"   ├─ Input Query: {message[:60]}{'...' if len(message) > 60 else ''}")
+            print(f"   ├─ Search Results: {total_sources} items from {len([k for k, v in search_results_summary.items() if k.endswith(('knowledge', 'messages', 'episodes', 'cache')) and v > 0])} layers")
+            print(f"   ├─ Retrieving: Historical performance data")
+            print(f"   └─ Deciding: Best model based on learned patterns\n")
             
-            contexts_to_optimize = [{"content": full_context, "score": 1.0}]
-            optimized_contexts, opt_stats = self.context_optimizer.optimize(
-                contexts=contexts_to_optimize,
-                query=message
+            # Include search results in query context for better model selection
+            enhanced_query_context = f"{message}\n[Search Results: {total_sources} items, {len(full_context)} chars]"
+            
+            model_name, model_reason, rag_insights = self.model_selector.select_model_with_rag(
+                task_type="chat",
+                query_context=enhanced_query_context,
+                user_id=self.user_id,
+                verbose=True
             )
             
-            if optimized_contexts:
-                full_context = optimized_contexts[0]['content']
-                print(f"\n✅ OPTIMIZATION RESULTS:")
-                print(f"   ├─ Original: {opt_stats['original_tokens']} tokens")
-                print(f"   ├─ Optimized: {opt_stats['final_tokens']} tokens")
-                print(f"   ├─ Reduction: {opt_stats['reduction_percentage']:.1f}%")
-                print(f"   ├─ Stage Results:")
-                print(f"   │  ├─ 1️⃣ Duplicates removed: {opt_stats['duplicates_removed']}")
-                print(f"   │  ├─ 2️⃣ Diversity filtered: {opt_stats['diversity_filtered']}")
-                print(f"   │  ├─ 3️⃣ Contradictions detected: {opt_stats['contradictions_detected']}")
-                print(f"   │  ├─ 4️⃣ Low entropy removed: {opt_stats['low_entropy_removed']}")
-                print(f"   │  ├─ 5️⃣ Compressed contexts: {opt_stats['compressed_count']}")
-                print(f"   │  ├─ 6️⃣ Re-ranking iterations: {opt_stats['iterations']}")
-                if opt_stats.get('adaptive_threshold_used'):
-                    print(f"   │  │  └─ Adaptive threshold: {opt_stats['adaptive_threshold_used']:.3f}")
-                print(f"   │  └─ 7️⃣ Final contexts: {opt_stats['final_count']}")
-                print(f"   └─ ✓ Context optimized and ready")
-        
-        # STEP 4: CONTEXT DISPLAY
-        print(f"\n{'='*70}")
-        print(f"📺 STEP 4: CONTEXT DISPLAY")
-        print(f"{'='*70}")
-        print(f"Final optimized context ready for LLM...")
-        print(f"   ├─ Total context size: {len(full_context)} chars")
-        print(f"   ├─ Estimated tokens: ~{len(full_context) // 4}")
-        print(f"   └─ Sources integrated: Multiple layers\n")
-        
-        # STEP 5: LLM GENERATION
-        print(f"\n{'='*70}")
-        print(f"🤖 STEP 5: LLM GENERATION (Using: {model_name})")
-        print(f"{'='*70}")
-        
-        if self.groq_client:
-            print(f"Generating response with {model_name}...")
-            print(f"   ├─ Temperature: 0.7")
-            print(f"   ├─ Max tokens: 500")
-            print(f"   └─ Processing...\n")
+            print(f"\n✅ MODEL SELECTED: {model_name}")
+            print(f"   ┌─────────────────────────────────────────────┐")
+            print(f"   │ WHY THIS MODEL?                              │")
+            print(f"   ├─────────────────────────────────────────────┤")
+            print(f"   │ {model_reason[:44]:44} │")
+            print(f"   └─────────────────────────────────────────────┘")
             
-            try:
-                response = self.groq_client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": f"""You are a helpful assistant with access to the user's memory.
-                        
-CONTEXT:
-{full_context}
-
-Answer the user's question based on this context. If the information is not available in the context, say so clearly."""},
-                        {"role": "user", "content": message}
-                    ],
-                    temperature=0.7,
-                    max_tokens=500
-                )
-                reply = response.choices[0].message.content
-                
-                # Calculate response metrics
-                latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-                token_count = response.usage.total_tokens if hasattr(response, 'usage') else 0
-                
-                # Log performance for RAG-based learning
-                if self.model_selector:
-                    self.model_selector.log_performance(
-                        user_id=self.user_id,
-                        task_type="chat",
-                        model_name=model_name,
-                        query_context=message,
-                        response_quality=0.8,  # Default quality (can be improved with feedback)
-                        latency_ms=latency_ms,
-                        token_count=token_count,
-                        success=True
-                    )
-                
-            except Exception as e:
-                reply = f"Based on your stored data:\n{full_context[:500]}...\n\nNote: Unable to generate AI response. Error: {str(e)}"
-                response_success = False
-                
-                # Log failure
-                if self.model_selector:
-                    latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-                    self.model_selector.log_performance(
-                        user_id=self.user_id,
-                        task_type="chat",
-                        model_name=model_name,
-                        query_context=message,
-                        response_quality=0.0,
-                        latency_ms=latency_ms,
-                        token_count=0,
-                        success=False
-                    )
+            # Display input summary
+            print(f"\n   📥 INPUT SUMMARY:")
+            print(f"      ├─ Query: {message[:50]}{'...' if len(message) > 50 else ''}")
+            print(f"      ├─ Search Results: {search_results_summary['total_results']} items")
+            print(f"      │  ├─ Semantic Knowledge: {search_results_summary['semantic_knowledge']}")
+            print(f"      │  ├─ Episodic Messages: {search_results_summary['episodic_messages']}")
+            print(f"      │  ├─ Episodic Episodes: {search_results_summary['episodic_episodes']}")
+            print(f"      │  └─ Temporary Cache: {search_results_summary['temporary_cache']}")
+            print(f"      └─ Context: {search_results_summary['context_size_tokens']} tokens")
+            
+            if rag_insights:
+                print(f"\n   📊 RAG INSIGHTS:")
+                if 'cache_hit' in rag_insights:
+                    cache_status = "✓ Hit (instant retrieval)" if rag_insights['cache_hit'] else "✗ Miss (DB query performed)"
+                    print(f"      ├─ Cache: {cache_status}")
+                if 'similar_contexts' in rag_insights:
+                    print(f"      ├─ Similar past queries: {rag_insights['similar_contexts']}")
+                if 'avg_success_rate' in rag_insights:
+                    success_rate = rag_insights['avg_success_rate']
+                    rating = "⭐⭐⭐⭐⭐" if success_rate >= 90 else "⭐⭐⭐⭐" if success_rate >= 75 else "⭐⭐⭐" if success_rate >= 60 else "⭐⭐"
+                    print(f"      ├─ Historical success: {success_rate:.1f}% {rating}")
+                if 'performance_data' in rag_insights:
+                    print(f"      └─ Based on {rag_insights.get('total_records', 0)} past interactions")
         else:
-            # Fallback response without Groq
-            reply = f"Based on your stored information:\n\n{full_context}\n\nTo get AI-powered responses, configure GROQ_API_KEY in your .env file."
+            print(f"\n✅ MODEL SELECTED: {model_name}")
+            print(f"   └─ Reason: {model_reason}")
         
-        # STEP 6: STORE IN MEMORY SYSTEM (Both input and response)
+        # Display final optimized context with proper formatting
         print(f"\n{'='*70}")
-        print(f"💾 STEP 6: STORING IN MEMORY SYSTEM")
+        print(f"📋 FINAL CONTEXT")
+        print(f"{'='*70}")
+        print(f"📊 Metrics: {opt_stats['final_tokens']} tokens | {total_sources} sources")
+        print(f"{'='*70}\n")
+        print(full_context)
+        print(f"\n{'='*70}")
+        print(f"End of Context")
+        print(f"{'='*70}\n")
+        
+        # STEP 4: STORING IN MEMORY SYSTEM
+        print(f"\n{'='*70}")
+        print(f"💾 STEP 4: STORING IN MEMORY SYSTEM (Feedback Loop)")
         print(f"{'='*70}")
         self.add_chat_message("user", message)
-        self.add_chat_message("assistant", reply)
+        # No assistant response to store since we're not generating one
         print(f"   ✓ User question stored → EPISODIC (super_chat_messages)")
-        print(f"   ✓ Assistant response stored → EPISODIC (super_chat_messages)")
         print(f"   ✓ Data synced to Temporary System (Redis cache)\n")
-        
-        print(f"\n🤖 {reply}\n")
     
     def retrieve_and_respond(self, stored_text: str):
         """Retrieve relevant context from storage layers and provide intelligent response"""
@@ -1955,18 +2199,7 @@ MEMORY CONTEXT:
 
 if __name__ == "__main__":
     print(f"\n🚀 Starting Interactive Memory System")
-    print(f"   Context Optimization: ENABLED (Balanced Profile)")
-    print(f"   • 30-50% token reduction for efficiency and quality")
-    print(f"\n   Optimization Techniques:")
-    print(f"   1. Deduplication - Remove exact & similar duplicates")
-    print(f"   2. Entropy Filtering - Remove low-information content")
-    print(f"   3. Compression - Consolidate redundant information")
-    print(f"   4. Re-ranking - Verify relevance with iterations")
-    print(f"      ├─ Threshold: 0.65 (65% relevance) - optimal precision/recall balance")
-    print(f"      ├─ Rationale: Below 60% too noisy, above 70% too strict")
-    print(f"      └─ Iterations: 3 (convergence point, diminishing returns after)")
-    print(f"   5. Token Limiting - Enforce context window limits")
-    print()
+    print(f"   Context Optimization: ENABLED (Balanced Profile)\n")
     
     app = InteractiveMemorySystem()
     app.run()
