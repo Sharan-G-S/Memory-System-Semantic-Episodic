@@ -108,7 +108,7 @@ search architecture
 history
 ```
 
-## 🔍 Metadata Filtering (New Feature!)
+## 🔍 Metadata Filtering
 
 The system now supports advanced metadata filtering for precision retrieval:
 
