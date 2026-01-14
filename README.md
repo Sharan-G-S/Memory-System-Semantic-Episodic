@@ -1,6 +1,6 @@
 # 🧠 Interactive Memory System
 
-A dual-layer semantic + episodic memory system with **Redis cache**, **context optimization**, **advanced metadata filtering**, and intelligent AI-powered Q&A capabilities.
+A  semantic + episodic memory system with **Redis cache**, **context optimization**, **advanced metadata filtering**, and intelligent AI-powered Q&A capabilities.
 
 ## 🚀 Quick Start
 
